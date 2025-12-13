@@ -29,6 +29,7 @@ Usage:
 
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -42,6 +43,7 @@ from kiro_gateway.config import (
     PROFILE_ARN,
     REGION,
     KIRO_CREDS_FILE,
+    PROXY_API_KEY,
 )
 from kiro_gateway.auth import KiroAuthManager
 from kiro_gateway.cache import ModelInfoCache
@@ -49,13 +51,101 @@ from kiro_gateway.routes import router
 from kiro_gateway.exceptions import validation_exception_handler
 
 
-# --- Конфигурация Loguru ---
+# --- Loguru Configuration ---
 logger.remove()
 logger.add(
     sys.stderr,
     colorize=True,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 )
+
+
+# --- Configuration Validation ---
+def validate_configuration() -> None:
+    """
+    Validates that required configuration is present.
+    
+    Checks:
+    - .env file exists
+    - Either REFRESH_TOKEN or KIRO_CREDS_FILE is configured
+    
+    Raises:
+        SystemExit: If critical configuration is missing
+    """
+    errors = []
+    
+    # Check if .env file exists
+    env_file = Path(".env")
+    env_example = Path(".env.example")
+    
+    if not env_file.exists():
+        errors.append(
+            ".env file not found!\n"
+            "\n"
+            "To get started:\n"
+            "1. Create .env or rename from .env.example:\n"
+            "   cp .env.example .env\n"
+            "\n"
+            "2. Edit .env and configure your credentials:\n"
+            "   2.1. Set you super-secret password as PROXY_API_KEY\n"
+            "   2.2. Set your Kiro credentials:\n"
+            "      - 1 way: KIRO_CREDS_FILE to your Kiro credentials JSON file\n"
+            "      - 2 way: REFRESH_TOKEN from Kiro IDE traffic\n"
+            "\n"
+            "See README.md for detailed instructions."
+        )
+    else:
+        # .env exists, check for credentials
+        has_refresh_token = bool(REFRESH_TOKEN)
+        has_creds_file = bool(KIRO_CREDS_FILE)
+        
+        # Check if creds file actually exists
+        if KIRO_CREDS_FILE:
+            creds_path = Path(KIRO_CREDS_FILE).expanduser()
+            if not creds_path.exists():
+                has_creds_file = False
+                logger.warning(f"KIRO_CREDS_FILE not found: {KIRO_CREDS_FILE}")
+        
+        if not has_refresh_token and not has_creds_file:
+            errors.append(
+                "No Kiro credentials configured!\n"
+                "\n"
+                "   Configure one of the following in your .env file:\n"
+                "\n"
+                "Set you super-secret password as PROXY_API_KEY\n"
+                "   PROXY_API_KEY=\"my-super-secret-password-123\"\n"
+                "\n"
+                "   Option 1 (Recommended): JSON credentials file\n"
+                "      KIRO_CREDS_FILE=\"path/to/your/kiro-credentials.json\"\n"
+                "\n"
+                "   Option 2: Refresh token\n"
+                "      REFRESH_TOKEN=\"your_refresh_token_here\"\n"
+                "\n"
+                "   See README.md for how to obtain credentials."
+            )
+    
+    # Print errors and exit if any
+    if errors:
+        logger.error("")
+        logger.error("=" * 60)
+        logger.error("  CONFIGURATION ERROR")
+        logger.error("=" * 60)
+        for error in errors:
+            for line in error.split('\n'):
+                logger.error(f"  {line}")
+        logger.error("=" * 60)
+        logger.error("")
+        sys.exit(1)
+    
+    # Log successful configuration
+    if KIRO_CREDS_FILE:
+        logger.info(f"Using credentials file: {KIRO_CREDS_FILE}")
+    elif REFRESH_TOKEN:
+        logger.info("Using refresh token from environment")
+
+
+# Run configuration validation on import
+validate_configuration()
 
 
 # --- Lifespan Manager ---
