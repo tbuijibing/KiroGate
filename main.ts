@@ -3174,16 +3174,16 @@ function verifyApiKey(req: Request): { valid: boolean; refreshToken?: string; ap
   }
 
   // 检查是否包含 : 分隔符（组合格式）
-  if (providedKey.includes(":")) {
-    const parts = providedKey.split(":");
-    if (parts.length === 2) {
-      const [apiKey, refreshToken] = parts;
+  // 注意：REFRESH_TOKEN 本身可能包含冒号，所以只按第一个冒号分割
+  const colonIndex = providedKey.indexOf(":");
+  if (colonIndex > 0) {
+    const apiKey = providedKey.slice(0, colonIndex);
+    const refreshToken = providedKey.slice(colonIndex + 1);
 
-      // 验证 API Key 部分
-      if (apiKey === settings.proxyApiKey) {
-        logger.debug(`Multi-tenant mode: PROXY_API_KEY:REFRESH_TOKEN (token: ${maskToken(refreshToken)})`);
-        return { valid: true, refreshToken, apiKey };
-      }
+    // 验证 API Key 部分
+    if (apiKey === settings.proxyApiKey) {
+      logger.debug(`Multi-tenant mode: PROXY_API_KEY:REFRESH_TOKEN (token: ${maskToken(refreshToken)})`);
+      return { valid: true, refreshToken, apiKey };
     }
   }
 
