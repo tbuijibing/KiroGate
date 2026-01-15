@@ -2782,21 +2782,28 @@ def _extract_refresh_tokens(payload: object) -> tuple[list[TokenCredential], int
         client_id = None
         client_secret = None
 
-        # 直接字段
+        # 直接字段（支持驼峰和蛇形命名）
         if "refreshToken" in obj:
             refresh_token = obj.get("refreshToken")
-        # 嵌套在 credentials 中
+        elif "refresh_token" in obj:
+            refresh_token = obj.get("refresh_token")
+        # 嵌套在 credentials 或 credentials_kiro_rs 中
         elif isinstance(obj.get("credentials"), dict):
             creds = obj["credentials"]
-            refresh_token = creds.get("refreshToken")
-            client_id = creds.get("clientId")
-            client_secret = creds.get("clientSecret")
+            refresh_token = creds.get("refreshToken") or creds.get("refresh_token")
+            client_id = creds.get("clientId") or creds.get("client_id")
+            client_secret = creds.get("clientSecret") or creds.get("client_secret")
+        elif isinstance(obj.get("credentials_kiro_rs"), dict):
+            creds = obj["credentials_kiro_rs"]
+            refresh_token = creds.get("refreshToken") or creds.get("refresh_token")
+            client_id = creds.get("clientId") or creds.get("client_id")
+            client_secret = creds.get("clientSecret") or creds.get("client_secret")
 
-        # 获取 clientId 和 clientSecret（如果在顶层）
+        # 获取 clientId 和 clientSecret（如果在顶层，支持两种命名）
         if client_id is None:
-            client_id = obj.get("clientId")
+            client_id = obj.get("clientId") or obj.get("client_id")
         if client_secret is None:
-            client_secret = obj.get("clientSecret")
+            client_secret = obj.get("clientSecret") or obj.get("client_secret")
 
         if not refresh_token or not isinstance(refresh_token, str):
             record_missing(path, "缺少 refreshToken")
@@ -2821,14 +2828,20 @@ def _extract_refresh_tokens(payload: object) -> tuple[list[TokenCredential], int
             client_secret=client_secret if auth_type == "idc" else None,
         ))
 
+    def _has_refresh_token(obj: dict) -> bool:
+        """检查对象是否包含 refreshToken（支持驼峰和蛇形命名）"""
+        if "refreshToken" in obj or "refresh_token" in obj:
+            return True
+        creds = obj.get("credentials") or obj.get("credentials_kiro_rs")
+        if isinstance(creds, dict) and ("refreshToken" in creds or "refresh_token" in creds):
+            return True
+        return False
+
     def handle_list(items: list, path: str, enforce_required: bool) -> None:
         for index, item in enumerate(items):
             item_path = f"{path}[{index}]"
             if isinstance(item, dict):
-                if "refreshToken" in item or (
-                    isinstance(item.get("credentials"), dict)
-                    and "refreshToken" in item["credentials"]
-                ):
+                if _has_refresh_token(item):
                     add_credential(item, item_path)
                 else:
                     if enforce_required:
@@ -2843,10 +2856,8 @@ def _extract_refresh_tokens(payload: object) -> tuple[list[TokenCredential], int
                     record_missing(item_path, "类型不支持")
 
     def handle_dict(obj: dict, path: str) -> None:
-        # 检查顶层是否有 refreshToken
-        if "refreshToken" in obj:
-            add_credential(obj, path if path else "root")
-        if isinstance(obj.get("credentials"), dict) and "refreshToken" in obj["credentials"]:
+        # 检查顶层是否有 refreshToken（支持两种命名）
+        if _has_refresh_token(obj):
             add_credential(obj, path if path else "root")
 
         for key, value in obj.items():
@@ -3291,14 +3302,18 @@ async def user_get_token_account_info(
     if not token or token.user_id != user.id:
         return JSONResponse(status_code=404, content={"error": "Token 不存在"})
 
-    # 获取解密后的 refresh_token
-    refresh_token = user_db.get_decrypted_token(token_id)
-    if not refresh_token:
+    # 获取解密后的完整凭证（包括 IDC 的 client_id/client_secret）
+    credentials = user_db.get_token_credentials(token_id)
+    if not credentials or not credentials.get("refresh_token"):
         return JSONResponse(status_code=400, content={"error": "无法获取 Token"})
 
     # 使用 refresh_token 获取 access_token
     from kiro_gateway.auth import KiroAuthManager
-    auth_manager = KiroAuthManager(refresh_token)
+    auth_manager = KiroAuthManager(
+        refresh_token=credentials["refresh_token"],
+        client_id=credentials.get("client_id"),
+        client_secret=credentials.get("client_secret"),
+    )
     try:
         access_token = await auth_manager.get_access_token()
         if not access_token:
