@@ -1,0 +1,23 @@
+{
+  "tasks": {
+    "dev": "deno run --allow-net --allow-env --unstable-kv --watch main.ts",
+    "start": "deno run --allow-net --allow-env --unstable-kv main.ts",
+    "check": "deno check main.ts"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": false
+  },
+  "fmt": {
+    "useTabs": false,
+    "lineWidth": 120,
+    "indentWidth": 2,
+    "singleQuote": true,
+    "proseWrap": "preserve"
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-explicit-any", "no-unused-vars"]
+    }
+  }
+}

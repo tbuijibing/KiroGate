@@ -1,43 +1,22 @@
-# Environment
-.env
-.env.local
+# Deno
+.deno/
 
-# Python Virtual Environment
-venv/
-.venv/
-env/
-.python-version
-
-# IDE
+# IDE / Editor
+.claude/
+.spec-workflow/
 .vscode/
 .idea/
-.shard/
+*.swp
+*.swo
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-dist/
-build/
+# Backup
+*.bak
+*.orig
 
-# Debug logs (generated when DEBUG_LAST_REQUEST=true)
-debug_logs*/
-debug*.json
+# OS
+.DS_Store
+Thumbs.db
 
-# Project-specific
-_notes/
-requests/
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Data files
-data/
-
-# Excluded docs
-docs/excdoc/
+# Env
+.env
+.env.local
