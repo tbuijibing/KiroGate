@@ -2350,6 +2350,10 @@ def render_admin_page() -> str:
       <div class="tab" onclick="showTab('tokens')">🔑 缓存</div>
       <div class="tab" onclick="showTab('announcement')">📣 公告</div>
       <div class="tab" onclick="showTab('system')">⚙️ 系统</div>
+      <div class="tab" onclick="showTab('cluster')">🌐 集群</div>
+      <div class="tab" onclick="showTab('risk')">🛡️ 风控</div>
+      <div class="tab" onclick="showTab('audit')">📝 审计</div>
+      <div class="tab" onclick="showTab('config-reload')">🔧 配置</div>
     </div>
 
     <!-- Tab Content: Overview -->
@@ -2808,11 +2812,174 @@ def render_admin_page() -> str:
         </div>
       </div>
     </div>
+
+    <!-- Tab Content: Cluster Overview -->
+    <div id="tab-cluster" class="tab-content hidden">
+      <div class="card mb-6">
+        <div class="flex flex-wrap justify-between items-center gap-4 mb-4">
+          <h2 class="text-lg font-semibold">🌐 集群概览</h2>
+          <button onclick="refreshCluster()" class="btn btn-primary text-sm">刷新</button>
+        </div>
+        <div id="clusterNodes" class="grid md:grid-cols-3 gap-4 mb-6">
+          <div class="p-4 rounded-lg text-center" style="background: var(--bg-input); color: var(--text-muted);">加载中...</div>
+        </div>
+        <h3 class="text-md font-semibold mb-3">📊 集群指标</h3>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+          <div style="background: var(--bg-input);" class="p-3 rounded-lg text-center">
+            <div class="text-xl font-bold text-blue-400" id="clusterTotalReqs">-</div>
+            <div class="text-xs" style="color: var(--text-muted);">总请求数</div>
+          </div>
+          <div style="background: var(--bg-input);" class="p-3 rounded-lg text-center">
+            <div class="text-xl font-bold text-green-400" id="clusterSuccessRate">-</div>
+            <div class="text-xs" style="color: var(--text-muted);">成功率</div>
+          </div>
+          <div style="background: var(--bg-input);" class="p-3 rounded-lg text-center">
+            <div class="text-xl font-bold text-yellow-400" id="clusterAvgLatency">-</div>
+            <div class="text-xs" style="color: var(--text-muted);">平均延迟</div>
+          </div>
+          <div style="background: var(--bg-input);" class="p-3 rounded-lg text-center">
+            <div class="text-xl font-bold text-orange-400" id="clusterP95">-</div>
+            <div class="text-xs" style="color: var(--text-muted);">P95 延迟</div>
+          </div>
+          <div style="background: var(--bg-input);" class="p-3 rounded-lg text-center">
+            <div class="text-xl font-bold text-red-400" id="clusterP99">-</div>
+            <div class="text-xs" style="color: var(--text-muted);">P99 延迟</div>
+          </div>
+        </div>
+        <h3 class="text-md font-semibold mb-3">🔑 Token 池概况</h3>
+        <div class="grid grid-cols-3 gap-4">
+          <div style="background: var(--bg-input);" class="p-3 rounded-lg text-center">
+            <div class="text-xl font-bold text-green-400" id="clusterTokenActive">-</div>
+            <div class="text-xs" style="color: var(--text-muted);">活跃</div>
+          </div>
+          <div style="background: var(--bg-input);" class="p-3 rounded-lg text-center">
+            <div class="text-xl font-bold text-yellow-400" id="clusterTokenCooldown">-</div>
+            <div class="text-xs" style="color: var(--text-muted);">冷却中</div>
+          </div>
+          <div style="background: var(--bg-input);" class="p-3 rounded-lg text-center">
+            <div class="text-xl font-bold text-red-400" id="clusterTokenSuspended">-</div>
+            <div class="text-xs" style="color: var(--text-muted);">已暂停</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab Content: Risk Control Dashboard -->
+    <div id="tab-risk" class="tab-content hidden">
+      <div class="card">
+        <div class="flex flex-wrap justify-between items-center gap-4 mb-4">
+          <h2 class="text-lg font-semibold">🛡️ Token 风控仪表盘</h2>
+          <div class="flex items-center gap-2">
+            <button onclick="batchPauseRisky()" class="btn btn-danger text-sm">批量暂停高风险</button>
+            <button onclick="refreshRiskDashboard()" class="btn btn-primary text-sm">刷新</button>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm data-table">
+            <thead>
+              <tr style="color: var(--text-muted); border-bottom: 1px solid var(--border);">
+                <th class="text-left py-3 px-3">ID</th>
+                <th class="text-left py-3 px-3">Risk Score</th>
+                <th class="text-left py-3 px-3">RPM</th>
+                <th class="text-left py-3 px-3">RPH</th>
+                <th class="text-left py-3 px-3">并发</th>
+                <th class="text-left py-3 px-3">连续失败</th>
+                <th class="text-left py-3 px-3">状态</th>
+                <th class="text-left py-3 px-3">操作</th>
+              </tr>
+            </thead>
+            <tbody id="riskTokensTable">
+              <tr><td colspan="8" class="py-6 text-center" style="color: var(--text-muted);">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab Content: Audit Logs -->
+    <div id="tab-audit" class="tab-content hidden">
+      <div class="card">
+        <div class="flex flex-wrap justify-between items-center gap-4 mb-4">
+          <h2 class="text-lg font-semibold">📝 审计日志</h2>
+          <div class="flex items-center gap-2">
+            <select id="auditActionFilter" onchange="refreshAuditLogs(1)" class="px-3 py-2 rounded-lg text-sm" style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text);">
+              <option value="">全部操作</option>
+              <option value="token_pause">Token 暂停</option>
+              <option value="token_resume">Token 恢复</option>
+              <option value="token_batch_pause">批量暂停</option>
+              <option value="user_ban">用户封禁</option>
+              <option value="user_approve">用户审批</option>
+              <option value="quota_update">配额更新</option>
+              <option value="config_reload">配置重载</option>
+            </select>
+            <button onclick="refreshAuditLogs(1)" class="btn btn-primary text-sm">刷新</button>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm data-table">
+            <thead>
+              <tr style="color: var(--text-muted); border-bottom: 1px solid var(--border);">
+                <th class="text-left py-3 px-3">操作类型</th>
+                <th class="text-left py-3 px-3">目标类型</th>
+                <th class="text-left py-3 px-3">目标 ID</th>
+                <th class="text-left py-3 px-3">详情</th>
+                <th class="text-left py-3 px-3">操作时间</th>
+              </tr>
+            </thead>
+            <tbody id="auditLogsTable">
+              <tr><td colspan="5" class="py-6 text-center" style="color: var(--text-muted);">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="auditPagination" class="flex items-center justify-between mt-4 pt-4" style="border-top: 1px solid var(--border); display: none;">
+          <span id="auditInfo" class="text-sm" style="color: var(--text-muted);"></span>
+          <div id="auditPages" class="flex gap-1"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab Content: Config Hot Reload -->
+    <div id="tab-config-reload" class="tab-content hidden">
+      <div class="card mb-6">
+        <div class="flex flex-wrap justify-between items-center gap-4 mb-4">
+          <h2 class="text-lg font-semibold">🔧 配置热重载</h2>
+          <button onclick="refreshHotConfig()" class="btn btn-primary text-sm">刷新</button>
+        </div>
+        <p class="text-sm mb-4" style="color: var(--text-muted);">修改后点击"应用"即时生效，所有节点将在 10 秒内同步更新。</p>
+        <div id="hotConfigItems" class="space-y-3">
+          <div class="p-4 rounded-lg text-center" style="background: var(--bg-input); color: var(--text-muted);">加载中...</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2 class="text-lg font-semibold mb-4">👥 批量用户管理</h2>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="p-4 rounded-lg" style="background: var(--bg-input);">
+            <div class="font-medium mb-2">用户配额设置</div>
+            <div class="space-y-2">
+              <input type="number" id="quotaUserId" placeholder="用户 ID" class="w-full px-3 py-2 rounded-lg text-sm" style="background: var(--bg-card); border: 1px solid var(--border); color: var(--text);">
+              <input type="number" id="quotaDailyLimit" placeholder="每日配额" class="w-full px-3 py-2 rounded-lg text-sm" style="background: var(--bg-card); border: 1px solid var(--border); color: var(--text);">
+              <input type="number" id="quotaMonthlyLimit" placeholder="每月配额" class="w-full px-3 py-2 rounded-lg text-sm" style="background: var(--bg-card); border: 1px solid var(--border); color: var(--text);">
+              <button onclick="setUserQuota()" class="btn btn-primary text-sm w-full">设置配额</button>
+            </div>
+          </div>
+          <div class="p-4 rounded-lg" style="background: var(--bg-input);">
+            <div class="font-medium mb-2">批量操作</div>
+            <div class="space-y-2">
+              <textarea id="batchUserIds" placeholder="输入用户 ID，每行一个" rows="3" class="w-full px-3 py-2 rounded-lg text-sm" style="background: var(--bg-card); border: 1px solid var(--border); color: var(--text);"></textarea>
+              <div class="flex gap-2">
+                <button onclick="batchApproveUsersNew()" class="btn btn-success text-sm flex-1">批量审批</button>
+                <button onclick="batchBanUsersNew()" class="btn btn-danger text-sm flex-1">批量封禁</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </main>
 
   <script>
     let currentTab = 'overview';
-    const allTabs = ['overview','users','donated-tokens','ip-stats','blacklist','tokens','announcement','system'];
+    const allTabs = ['overview','users','donated-tokens','ip-stats','blacklist','tokens','announcement','system','cluster','risk','audit','config-reload'];
 
     function escapeHtml(value) {{
       return String(value || '')
@@ -3132,8 +3299,13 @@ def render_admin_page() -> str:
     function showTab(tab) {{
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
-      document.querySelector(`.tab:nth-child(${{allTabs.indexOf(tab)+1}})`).classList.add('active');
-      document.getElementById('tab-' + tab).classList.remove('hidden');
+      const idx = allTabs.indexOf(tab);
+      if (idx >= 0) {{
+        const tabEl = document.querySelectorAll('.tab')[idx];
+        if (tabEl) tabEl.classList.add('active');
+      }}
+      const panel = document.getElementById('tab-' + tab);
+      if (panel) panel.classList.remove('hidden');
       currentTab = tab;
       if (tab === 'users') refreshUsers();
       if (tab === 'donated-tokens') refreshDonatedTokens();
@@ -3142,6 +3314,10 @@ def render_admin_page() -> str:
       if (tab === 'tokens') refreshTokenList();
       if (tab === 'announcement') refreshAnnouncement();
       if (tab === 'system') refreshProxyApiKey();
+      if (tab === 'cluster') refreshCluster();
+      if (tab === 'risk') refreshRiskDashboard();
+      if (tab === 'audit') refreshAuditLogs(1);
+      if (tab === 'config-reload') refreshHotConfig();
     }}
 
     async function refreshStats() {{
@@ -4170,6 +4346,266 @@ def render_admin_page() -> str:
       refreshDonatedTokens();
     }}
 
+    // === Cluster Overview ===
+    async function refreshCluster() {{
+      try {{
+        const d = await fetchJson('/admin/api/cluster');
+        const nodes = d.nodes || [];
+        const nodesEl = document.getElementById('clusterNodes');
+        if (nodes.length === 0) {{
+          nodesEl.innerHTML = '<div class="p-4 rounded-lg text-center" style="background: var(--bg-input); color: var(--text-muted);">暂无节点数据（单节点模式或未配置）</div>';
+        }} else {{
+          nodesEl.innerHTML = nodes.map(n => `
+            <div class="p-4 rounded-lg" style="background: var(--bg-input);">
+              <div class="flex items-center gap-2 mb-2">
+                <span class="status-dot ${{n.status === 'online' ? 'status-ok' : 'status-error'}}"></span>
+                <span class="font-medium">${{escapeHtml(n.node_id)}}</span>
+              </div>
+              <div class="text-xs space-y-1" style="color: var(--text-muted);">
+                <div>状态: ${{n.status === 'online' ? '在线' : '离线'}}</div>
+                <div>运行时间: ${{n.uptime || '-'}}s</div>
+                <div>连接数: ${{n.connections ?? '-'}}</div>
+                <div>请求/分: ${{n.requests_per_min ?? '-'}}</div>
+              </div>
+            </div>
+          `).join('');
+        }}
+        const pool = d.token_pool || {{}};
+        document.getElementById('clusterTokenActive').textContent = pool.active ?? '-';
+        document.getElementById('clusterTokenCooldown').textContent = pool.cooldown ?? '-';
+        document.getElementById('clusterTokenSuspended').textContent = pool.suspended ?? '-';
+        const m = d.metrics || {{}};
+        document.getElementById('clusterTotalReqs').textContent = m.total_requests ?? '-';
+        document.getElementById('clusterSuccessRate').textContent = m.success_rate != null ? (m.success_rate * 100).toFixed(1) + '%' : '-';
+        document.getElementById('clusterAvgLatency').textContent = m.avg_latency != null ? m.avg_latency.toFixed(0) + 'ms' : '-';
+        document.getElementById('clusterP95').textContent = m.p95_latency != null ? m.p95_latency.toFixed(0) + 'ms' : '-';
+        document.getElementById('clusterP99').textContent = m.p99_latency != null ? m.p99_latency.toFixed(0) + 'ms' : '-';
+      }} catch (e) {{
+        console.error('refreshCluster error:', e);
+      }}
+    }}
+
+    // === Risk Control Dashboard ===
+    async function refreshRiskDashboard() {{
+      try {{
+        const d = await fetchJson('/admin/api/tokens/pool');
+        const tokens = d.tokens || [];
+        const tbody = document.getElementById('riskTokensTable');
+        if (tokens.length === 0) {{
+          tbody.innerHTML = '<tr><td colspan="8" class="py-6 text-center" style="color: var(--text-muted);">暂无 Token 数据</td></tr>';
+          return;
+        }}
+        tbody.innerHTML = tokens.map(t => {{
+          const rs = t.risk_score ?? 0;
+          let rsColor = 'text-green-400';
+          if (rs > 0.7) rsColor = 'text-red-400';
+          else if (rs > 0.3) rsColor = 'text-yellow-400';
+          const rpmPct = t.rpm_limit ? Math.min(100, ((t.rpm ?? 0) / t.rpm_limit) * 100) : 0;
+          const rphPct = t.rph_limit ? Math.min(100, ((t.rph ?? 0) / t.rph_limit) * 100) : 0;
+          let statusBadge = '';
+          const st = (t.status || 'active').toLowerCase();
+          if (st === 'active') statusBadge = '<span class="text-green-400">正常</span>';
+          else if (st === 'cooldown') statusBadge = '<span class="text-yellow-400">冷却中</span>';
+          else statusBadge = '<span class="text-red-400">已暂停</span>';
+          const isPaused = st === 'suspended' || st === 'paused';
+          return `<tr class="table-row">
+            <td class="py-3 px-3">${{escapeHtml(t.token_id ?? t.id)}}</td>
+            <td class="py-3 px-3 font-bold ${{rsColor}}">${{rs.toFixed(2)}}</td>
+            <td class="py-3 px-3">
+              <div class="flex items-center gap-2">
+                <div style="width:60px;height:6px;background:var(--bg-input);border-radius:3px;overflow:hidden;">
+                  <div style="width:${{rpmPct}}%;height:100%;background:${{rpmPct > 80 ? 'var(--danger)' : 'var(--primary)'}};border-radius:3px;"></div>
+                </div>
+                <span class="text-xs">${{t.rpm ?? 0}}/${{t.rpm_limit ?? '-'}}</span>
+              </div>
+            </td>
+            <td class="py-3 px-3">
+              <div class="flex items-center gap-2">
+                <div style="width:60px;height:6px;background:var(--bg-input);border-radius:3px;overflow:hidden;">
+                  <div style="width:${{rphPct}}%;height:100%;background:${{rphPct > 80 ? 'var(--danger)' : 'var(--primary)'}};border-radius:3px;"></div>
+                </div>
+                <span class="text-xs">${{t.rph ?? 0}}/${{t.rph_limit ?? '-'}}</span>
+              </div>
+            </td>
+            <td class="py-3 px-3">${{t.concurrent ?? 0}}/${{t.max_concurrent ?? '-'}}</td>
+            <td class="py-3 px-3">${{t.consecutive_fails ?? 0}}</td>
+            <td class="py-3 px-3">${{statusBadge}}</td>
+            <td class="py-3 px-3">
+              ${{isPaused
+                ? `<button onclick="resumeToken('${{t.token_id ?? t.id}}')" class="btn btn-success text-xs">恢复</button>`
+                : `<button onclick="pauseToken('${{t.token_id ?? t.id}}')" class="btn btn-danger text-xs">暂停</button>`
+              }}
+            </td>
+          </tr>`;
+        }}).join('');
+      }} catch (e) {{
+        console.error('refreshRiskDashboard error:', e);
+      }}
+    }}
+
+    async function pauseToken(tokenId) {{
+      if (!confirm('确定暂停此 Token？')) return;
+      const fd = new FormData();
+      fd.append('token_id', tokenId);
+      try {{
+        await fetchJson('/admin/api/tokens/pause', {{ method: 'POST', body: fd }});
+        refreshRiskDashboard();
+      }} catch (e) {{ alert(e.error || '操作失败'); }}
+    }}
+
+    async function resumeToken(tokenId) {{
+      const fd = new FormData();
+      fd.append('token_id', tokenId);
+      try {{
+        await fetchJson('/admin/api/tokens/resume', {{ method: 'POST', body: fd }});
+        refreshRiskDashboard();
+      }} catch (e) {{ alert(e.error || '操作失败'); }}
+    }}
+
+    async function batchPauseRisky() {{
+      if (!confirm('确定批量暂停所有高风险 Token（Risk Score > 0.7）？')) return;
+      try {{
+        const d = await fetchJson('/admin/api/tokens/batch-pause-risky', {{ method: 'POST' }});
+        alert(d.message || `已暂停 ${{d.paused_count ?? 0}} 个 Token`);
+        refreshRiskDashboard();
+      }} catch (e) {{ alert(e.error || '操作失败'); }}
+    }}
+
+    // === Audit Logs ===
+    let auditCurrentPage = 1;
+
+    async function refreshAuditLogs(page) {{
+      if (page) auditCurrentPage = page;
+      try {{
+        const action = document.getElementById('auditActionFilter').value;
+        const d = await fetchJson('/admin/api/audit-logs' + buildQuery({{
+          page: auditCurrentPage,
+          page_size: 20,
+          action: action || undefined
+        }}));
+        const logs = d.logs || [];
+        const tbody = document.getElementById('auditLogsTable');
+        if (logs.length === 0) {{
+          tbody.innerHTML = '<tr><td colspan="5" class="py-6 text-center" style="color: var(--text-muted);">暂无审计日志</td></tr>';
+        }} else {{
+          tbody.innerHTML = logs.map(l => `<tr class="table-row">
+            <td class="py-3 px-3"><span class="px-2 py-1 rounded text-xs" style="background: rgba(56,189,248,0.15); color: var(--primary);">${{escapeHtml(l.action_type)}}</span></td>
+            <td class="py-3 px-3">${{escapeHtml(l.target_type || '-')}}</td>
+            <td class="py-3 px-3">${{escapeHtml(l.target_id || '-')}}</td>
+            <td class="py-3 px-3 text-xs" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${{escapeHtml(l.details || '-')}}</td>
+            <td class="py-3 px-3 text-xs">${{l.created_at ? new Date(l.created_at * 1000).toLocaleString() : '-'}}</td>
+          </tr>`).join('');
+        }}
+        const total = d.total || 0;
+        const totalPages = Math.ceil(total / 20) || 1;
+        const pagDiv = document.getElementById('auditPagination');
+        if (total > 0) {{
+          pagDiv.style.display = 'flex';
+          document.getElementById('auditInfo').textContent = `共 ${{total}} 条，第 ${{auditCurrentPage}}/${{totalPages}} 页`;
+          const pagesEl = document.getElementById('auditPages');
+          let btns = '';
+          if (auditCurrentPage > 1) btns += `<button onclick="refreshAuditLogs(${{auditCurrentPage - 1}})" class="btn text-xs">上一页</button>`;
+          if (auditCurrentPage < totalPages) btns += `<button onclick="refreshAuditLogs(${{auditCurrentPage + 1}})" class="btn text-xs">下一页</button>`;
+          pagesEl.innerHTML = btns;
+        }} else {{
+          pagDiv.style.display = 'none';
+        }}
+      }} catch (e) {{
+        console.error('refreshAuditLogs error:', e);
+      }}
+    }}
+
+    // === Config Hot Reload ===
+    async function refreshHotConfig() {{
+      try {{
+        const d = await fetchJson('/admin/api/config/hot-reload');
+        const configs = d.configs || {{}};
+        const container = document.getElementById('hotConfigItems');
+        const keys = Object.keys(configs);
+        if (keys.length === 0) {{
+          container.innerHTML = '<div class="p-4 rounded-lg text-center" style="background: var(--bg-input); color: var(--text-muted);">暂无可热重载的配置项</div>';
+          return;
+        }}
+        const labels = {{
+          token_rpm_limit: 'Token RPM 限制',
+          token_rph_limit: 'Token RPH 限制',
+          token_max_concurrent: 'Token 最大并发',
+          token_max_consecutive_uses: 'Token 最大连续使用',
+          default_user_daily_quota: '用户默认日配额',
+          default_user_monthly_quota: '用户默认月配额',
+          default_key_rpm_limit: 'API Key RPM 限制',
+          token_min_success_rate: 'Token 最低成功率'
+        }};
+        container.innerHTML = keys.map(key => `
+          <div class="flex items-center gap-3 p-3 rounded-lg" style="background: var(--bg-input);">
+            <div class="flex-1">
+              <div class="text-sm font-medium">${{escapeHtml(labels[key] || key)}}</div>
+              <div class="text-xs" style="color: var(--text-muted);">${{escapeHtml(key)}}</div>
+            </div>
+            <input type="number" id="config_${{key}}" value="${{configs[key]}}" class="px-3 py-2 rounded-lg text-sm w-32" style="background: var(--bg-card); border: 1px solid var(--border); color: var(--text);">
+            <button onclick="applyConfig('${{key}}')" class="btn btn-primary text-xs">应用</button>
+          </div>
+        `).join('');
+      }} catch (e) {{
+        console.error('refreshHotConfig error:', e);
+      }}
+    }}
+
+    async function applyConfig(key) {{
+      const input = document.getElementById('config_' + key);
+      if (!input) return;
+      const value = input.value.trim();
+      if (!value) {{ alert('请输入配置值'); return; }}
+      const fd = new FormData();
+      fd.append('config_key', key);
+      fd.append('config_value', value);
+      try {{
+        const d = await fetchJson('/admin/config/reload', {{ method: 'POST', body: fd }});
+        alert(d.message || '配置已更新');
+        refreshHotConfig();
+      }} catch (e) {{ alert(e.error || '更新失败'); }}
+    }}
+
+    // === User Quota & Batch Management ===
+    async function setUserQuota() {{
+      const userId = document.getElementById('quotaUserId').value.trim();
+      const daily = document.getElementById('quotaDailyLimit').value.trim();
+      const monthly = document.getElementById('quotaMonthlyLimit').value.trim();
+      if (!userId) {{ alert('请输入用户 ID'); return; }}
+      const fd = new FormData();
+      fd.append('user_id', userId);
+      if (daily) fd.append('daily_quota', daily);
+      if (monthly) fd.append('monthly_quota', monthly);
+      try {{
+        const d = await fetchJson('/admin/api/users/quota', {{ method: 'POST', body: fd }});
+        alert(d.message || '配额设置成功');
+      }} catch (e) {{ alert(e.error || '设置失败'); }}
+    }}
+
+    async function batchApproveUsersNew() {{
+      const ids = document.getElementById('batchUserIds').value.trim();
+      if (!ids) {{ alert('请输入用户 ID'); return; }}
+      if (!confirm('确定批量审批这些用户？')) return;
+      const fd = new FormData();
+      fd.append('user_ids', ids.split(/[\\n,]+/).map(s => s.trim()).filter(Boolean).join(','));
+      try {{
+        const d = await fetchJson('/admin/api/users/batch-approve', {{ method: 'POST', body: fd }});
+        alert(d.message || '批量审批完成');
+      }} catch (e) {{ alert(e.error || '操作失败'); }}
+    }}
+
+    async function batchBanUsersNew() {{
+      const ids = document.getElementById('batchUserIds').value.trim();
+      if (!ids) {{ alert('请输入用户 ID'); return; }}
+      if (!confirm('确定批量封禁这些用户？')) return;
+      const fd = new FormData();
+      fd.append('user_ids', ids.split(/[\\n,]+/).map(s => s.trim()).filter(Boolean).join(','));
+      try {{
+        const d = await fetchJson('/admin/api/users/batch-ban', {{ method: 'POST', body: fd }});
+        alert(d.message || '批量封禁完成');
+      }} catch (e) {{ alert(e.error || '操作失败'); }}
+    }}
+
     refreshStats();
     refreshAnnouncement();
     refreshProxyApiKey();
@@ -4299,9 +4735,115 @@ def render_user_page(user) -> str:
         </div>
       </div>
     </div>
+    <!-- 通知铃铛 -->
+    <div id="notificationArea" class="card mb-6" style="display: none;">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-xl">🔔</span>
+          <h3 class="font-bold">通知提醒</h3>
+          <span id="notifBadge" class="text-xs px-2 py-0.5 rounded-full bg-red-500 text-white" style="display: none;">0</span>
+        </div>
+        <button onclick="markAllNotificationsRead()" class="text-xs px-3 py-1 rounded" style="background: var(--bg-input); border: 1px solid var(--border);">全部已读</button>
+      </div>
+      <div id="notificationList" class="mt-3 space-y-2"></div>
+    </div>
     <div class="flex gap-2 mb-4 border-b" style="border-color: var(--border);">
+      <button class="tab px-4 py-2 font-medium" onclick="showTab('overview')" id="tab-overview">📊 概览</button>
       <button class="tab px-4 py-2 font-medium" onclick="showTab('tokens')" id="tab-tokens">🔑 Token 管理</button>
       <button class="tab px-4 py-2 font-medium" onclick="showTab('keys')" id="tab-keys">🗝️ API Keys</button>
+      <button class="tab px-4 py-2 font-medium" onclick="showTab('activity')" id="tab-activity">📋 活动</button>
+    </div>
+    <!-- 概览面板 -->
+    <div id="panel-overview" class="tab-panel" style="display: none;">
+      <!-- 使用统计卡片 -->
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div class="card text-center">
+          <div class="text-2xl font-bold text-indigo-400" id="statTotalRequests">-</div>
+          <div class="text-xs" style="color: var(--text-muted);">总请求数</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-2xl font-bold text-cyan-400" id="statTodayRequests">-</div>
+          <div class="text-xs" style="color: var(--text-muted);">今日请求</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-2xl font-bold text-blue-400" id="statMonthRequests">-</div>
+          <div class="text-xs" style="color: var(--text-muted);">本月请求</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-2xl font-bold text-green-400" id="statSuccessRate">-</div>
+          <div class="text-xs" style="color: var(--text-muted);">成功率</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-2xl font-bold text-amber-400" id="statDonatedTokens">-</div>
+          <div class="text-xs" style="color: var(--text-muted);">已捐赠 Token</div>
+        </div>
+      </div>
+      <!-- 配额进度条 -->
+      <div class="card mb-6">
+        <h3 class="font-bold mb-4">📊 配额使用情况</h3>
+        <div class="space-y-4">
+          <div>
+            <div class="flex justify-between text-sm mb-1">
+              <span>每日配额</span>
+              <span id="quotaDailyText" style="color: var(--text-muted);">- / -</span>
+            </div>
+            <div class="w-full h-3 rounded-full" style="background: var(--bg-input);">
+              <div id="quotaDailyBar" class="h-full rounded-full transition-all" style="width: 0%; background: var(--primary);"></div>
+            </div>
+          </div>
+          <div>
+            <div class="flex justify-between text-sm mb-1">
+              <span>每月配额</span>
+              <span id="quotaMonthlyText" style="color: var(--text-muted);">- / -</span>
+            </div>
+            <div class="w-full h-3 rounded-full" style="background: var(--bg-input);">
+              <div id="quotaMonthlyBar" class="h-full rounded-full transition-all" style="width: 0%; background: var(--accent, var(--primary));"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Token 健康状态 -->
+      <div class="card mb-6">
+        <h3 class="font-bold mb-4">💚 Token 健康状态</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm data-table">
+            <thead>
+              <tr style="color: var(--text-muted); border-bottom: 1px solid var(--border);">
+                <th class="text-left py-2 px-3">ID</th>
+                <th class="text-left py-2 px-3">状态</th>
+                <th class="text-left py-2 px-3">成功率</th>
+                <th class="text-left py-2 px-3">风险评分</th>
+                <th class="text-left py-2 px-3">连续失败</th>
+                <th class="text-left py-2 px-3">最后使用</th>
+              </tr>
+            </thead>
+            <tbody id="tokenHealthTable">
+              <tr><td colspan="6" class="py-4 text-center" style="color: var(--text-muted);">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <!-- API Key 管理列表 -->
+      <div class="card">
+        <h3 class="font-bold mb-4">🗝️ API Key 概览</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm data-table">
+            <thead>
+              <tr style="color: var(--text-muted); border-bottom: 1px solid var(--border);">
+                <th class="text-left py-2 px-3">Key</th>
+                <th class="text-left py-2 px-3">名称</th>
+                <th class="text-left py-2 px-3">状态</th>
+                <th class="text-left py-2 px-3">请求数</th>
+                <th class="text-left py-2 px-3">最后使用</th>
+                <th class="text-left py-2 px-3">创建时间</th>
+              </tr>
+            </thead>
+            <tbody id="overviewKeyTable">
+              <tr><td colspan="6" class="py-4 text-center" style="color: var(--text-muted);">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
     <div id="panel-tokens" class="tab-panel">
       <div class="card">
@@ -4503,6 +5045,30 @@ def render_user_page(user) -> str:
           💡 API Key 仅在创建时显示一次，请妥善保存。使用方式: <code class="bg-black/20 px-1 rounded">Authorization: Bearer sk-xxx</code><br>
           ⚠️ 每个账户最多可创建 <strong>10</strong> 个 API Key
         </p>
+      </div>
+    </div>
+    <!-- 活动面板 -->
+    <div id="panel-activity" class="tab-panel" style="display: none;">
+      <div class="card">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-bold">📋 最近请求记录</h3>
+          <button onclick="loadActivity()" class="text-xs px-3 py-1.5 rounded" style="background: var(--bg-input); border: 1px solid var(--border);">刷新</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm data-table">
+            <thead>
+              <tr style="color: var(--text-muted); border-bottom: 1px solid var(--border);">
+                <th class="text-left py-2 px-3">时间</th>
+                <th class="text-left py-2 px-3">模型</th>
+                <th class="text-left py-2 px-3">状态码</th>
+                <th class="text-left py-2 px-3">延迟 (ms)</th>
+              </tr>
+            </thead>
+            <tbody id="activityTable">
+              <tr><td colspan="4" class="py-4 text-center" style="color: var(--text-muted);">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </main>
@@ -4717,6 +5283,38 @@ def render_user_page(user) -> str:
       box-shadow: 0 10px 22px rgba(56, 189, 248, 0.25);
     }}
     details[open] .details-arrow {{ transform: rotate(180deg); }}
+    .quota-bar-warning {{ background: #f59e0b !important; }}
+    .quota-bar-danger {{ background: #ef4444 !important; }}
+    .risk-low {{ color: #22c55e; }}
+    .risk-medium {{ color: #f59e0b; }}
+    .risk-high {{ color: #ef4444; font-weight: bold; }}
+    .notif-item {{
+      padding: 0.75rem;
+      border-radius: 0.5rem;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }}
+    .notif-item .notif-dismiss {{
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      line-height: 1;
+      flex-shrink: 0;
+    }}
+    .notif-item .notif-dismiss:hover {{ color: var(--text); }}
+    .status-badge {{
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }}
+    .status-active {{ background: rgba(34,197,94,0.15); color: #22c55e; }}
+    .status-cooldown {{ background: rgba(245,158,11,0.15); color: #f59e0b; }}
+    .status-suspended {{ background: rgba(239,68,68,0.15); color: #ef4444; }}
   </style>
   <script>
     let currentTab = 'tokens';
@@ -6002,6 +6600,205 @@ def render_user_page(user) -> str:
       pages.innerHTML = html;
     }}
 
+    // ==================== 概览面板数据加载 ====================
+
+    async function loadStats() {{
+      try {{
+        const d = await fetchJson('/user/api/stats');
+        document.getElementById('statTotalRequests').textContent = d.total_requests ?? '-';
+        document.getElementById('statTodayRequests').textContent = d.today_requests ?? '-';
+        document.getElementById('statMonthRequests').textContent = d.month_requests ?? '-';
+        document.getElementById('statSuccessRate').textContent = d.success_rate !== undefined ? d.success_rate + '%' : '-';
+        document.getElementById('statDonatedTokens').textContent = d.donated_token_count ?? '-';
+        // 更新顶部总请求数
+        document.getElementById('requestCount').textContent = d.total_requests ?? '-';
+      }} catch (e) {{ console.error('loadStats error:', e); }}
+    }}
+
+    async function loadQuota() {{
+      try {{
+        const d = await fetchJson('/user/api/quota');
+        const dailyUsed = d.daily_used || 0;
+        const dailyQuota = d.daily_quota || 1;
+        const monthlyUsed = d.monthly_used || 0;
+        const monthlyQuota = d.monthly_quota || 1;
+
+        document.getElementById('quotaDailyText').textContent = dailyUsed + ' / ' + dailyQuota;
+        document.getElementById('quotaMonthlyText').textContent = monthlyUsed + ' / ' + monthlyQuota;
+
+        const dailyPct = Math.min(100, Math.round(dailyUsed / dailyQuota * 100));
+        const monthlyPct = Math.min(100, Math.round(monthlyUsed / monthlyQuota * 100));
+
+        const dailyBar = document.getElementById('quotaDailyBar');
+        dailyBar.style.width = dailyPct + '%';
+        if (dailyPct >= 90) dailyBar.className = 'h-full rounded-full transition-all quota-bar-danger';
+        else if (dailyPct >= 70) dailyBar.className = 'h-full rounded-full transition-all quota-bar-warning';
+
+        const monthlyBar = document.getElementById('quotaMonthlyBar');
+        monthlyBar.style.width = monthlyPct + '%';
+        if (monthlyPct >= 90) monthlyBar.className = 'h-full rounded-full transition-all quota-bar-danger';
+        else if (monthlyPct >= 70) monthlyBar.className = 'h-full rounded-full transition-all quota-bar-warning';
+      }} catch (e) {{ console.error('loadQuota error:', e); }}
+    }}
+
+    async function loadTokenHealth() {{
+      try {{
+        const d = await fetchJson('/user/api/token-health');
+        const tb = document.getElementById('tokenHealthTable');
+        const tokens = d.tokens || [];
+        if (!tokens.length) {{
+          tb.innerHTML = '<tr><td colspan="6" class="py-4 text-center" style="color: var(--text-muted);">暂无 Token</td></tr>';
+          return;
+        }}
+        tb.innerHTML = tokens.map(t => {{
+          let statusHtml = '';
+          if (t.status === 'active') statusHtml = '<span class="status-badge status-active">正常</span>';
+          else if (t.status === 'cooldown') statusHtml = '<span class="status-badge status-cooldown">冷却中</span>';
+          else statusHtml = '<span class="status-badge status-suspended">' + (t.status || '暂停') + '</span>';
+
+          const rs = t.risk_score || 0;
+          let riskClass = 'risk-low';
+          if (rs >= 0.7) riskClass = 'risk-high';
+          else if (rs >= 0.4) riskClass = 'risk-medium';
+
+          return `<tr class="table-row">
+            <td class="py-2 px-3">#${{t.id}}</td>
+            <td class="py-2 px-3">${{statusHtml}}</td>
+            <td class="py-2 px-3">${{t.success_rate}}%</td>
+            <td class="py-2 px-3"><span class="${{riskClass}}">${{rs.toFixed(3)}}</span></td>
+            <td class="py-2 px-3">${{t.consecutive_fails || 0}}</td>
+            <td class="py-2 px-3">${{t.last_used_at ? new Date(t.last_used_at).toLocaleString() : '-'}}</td>
+          </tr>`;
+        }}).join('');
+      }} catch (e) {{ console.error('loadTokenHealth error:', e); }}
+    }}
+
+    function renderOverviewKeys() {{
+      const tb = document.getElementById('overviewKeyTable');
+      if (!allKeys || !allKeys.length) {{
+        tb.innerHTML = '<tr><td colspan="6" class="py-4 text-center" style="color: var(--text-muted);">暂无 API Key</td></tr>';
+        return;
+      }}
+      tb.innerHTML = allKeys.map(k => {{
+        const statusHtml = k.is_active
+          ? '<span class="text-green-400">启用</span>'
+          : '<span class="text-gray-400">停用</span>';
+        return `<tr class="table-row">
+          <td class="py-2 px-3 font-mono">${{escapeHtml(k.key_prefix || '')}}</td>
+          <td class="py-2 px-3">${{escapeHtml(k.name || '-')}}</td>
+          <td class="py-2 px-3">${{statusHtml}}</td>
+          <td class="py-2 px-3">${{k.request_count || 0}}</td>
+          <td class="py-2 px-3">${{k.last_used ? new Date(k.last_used).toLocaleString() : '-'}}</td>
+          <td class="py-2 px-3">${{k.created_at ? new Date(k.created_at).toLocaleString() : '-'}}</td>
+        </tr>`;
+      }}).join('');
+    }}
+
+    async function loadActivity() {{
+      try {{
+        const d = await fetchJson('/user/api/activity');
+        const tb = document.getElementById('activityTable');
+        const records = d.records || [];
+        if (!records.length) {{
+          tb.innerHTML = '<tr><td colspan="4" class="py-4 text-center" style="color: var(--text-muted);">暂无请求记录</td></tr>';
+          return;
+        }}
+        tb.innerHTML = records.map(r => {{
+          const statusClass = r.status_code >= 200 && r.status_code < 300 ? 'text-green-400' : 'text-red-400';
+          return `<tr class="table-row">
+            <td class="py-2 px-3">${{r.created_at ? new Date(r.created_at).toLocaleString() : '-'}}</td>
+            <td class="py-2 px-3">${{escapeHtml(r.model || '-')}}</td>
+            <td class="py-2 px-3"><span class="${{statusClass}}">${{r.status_code}}</span></td>
+            <td class="py-2 px-3">${{r.latency_ms}} ms</td>
+          </tr>`;
+        }}).join('');
+      }} catch (e) {{ console.error('loadActivity error:', e); }}
+    }}
+
+    // ==================== 通知系统 ====================
+
+    async function loadNotifications() {{
+      try {{
+        const d = await fetchJson('/user/api/notifications');
+        const notifications = d.notifications || [];
+        const area = document.getElementById('notificationArea');
+        const badge = document.getElementById('notifBadge');
+        const list = document.getElementById('notificationList');
+
+        if (!notifications.length) {{
+          area.style.display = 'none';
+          return;
+        }}
+
+        area.style.display = 'block';
+        badge.style.display = 'inline';
+        badge.textContent = notifications.length;
+
+        list.innerHTML = notifications.map(n => {{
+          let icon = '📢';
+          if (n.type === 'token_suspended' || n.type === 'token_invalid') icon = '⚠️';
+          else if (n.type === 'quota_warning') icon = '📊';
+          return `<div class="notif-item">
+            <span>${{icon}}</span>
+            <div class="flex-1">
+              <div class="text-sm">${{escapeHtml(n.message)}}</div>
+              <div class="text-xs mt-1" style="color: var(--text-muted);">${{n.created_at ? new Date(n.created_at).toLocaleString() : ''}}</div>
+            </div>
+            <span class="notif-dismiss" onclick="dismissNotification(${{n.id}})">&times;</span>
+          </div>`;
+        }}).join('');
+      }} catch (e) {{ console.error('loadNotifications error:', e); }}
+    }}
+
+    async function dismissNotification(id) {{
+      try {{
+        const fd = new FormData();
+        fd.append('notification_id', id);
+        await fetch('/user/api/notifications/read', {{ method: 'POST', body: fd }});
+        loadNotifications();
+      }} catch (e) {{ console.error(e); }}
+    }}
+
+    async function markAllNotificationsRead() {{
+      try {{
+        await fetch('/user/api/notifications/read-all', {{ method: 'POST' }});
+        loadNotifications();
+      }} catch (e) {{ console.error(e); }}
+    }}
+
+    // ==================== 概览面板加载 ====================
+
+    let overviewLoaded = false;
+    let activityLoaded = false;
+
+    function loadOverviewData() {{
+      if (overviewLoaded) return;
+      overviewLoaded = true;
+      loadStats();
+      loadQuota();
+      loadTokenHealth();
+      // Overview keys will render from allKeys after loadKeys completes
+      renderOverviewKeys();
+    }}
+
+    // Patch showTab to trigger lazy loading
+    const _origShowTab = showTab;
+    showTab = function(tab) {{
+      _origShowTab(tab);
+      if (tab === 'overview') loadOverviewData();
+      if (tab === 'activity' && !activityLoaded) {{
+        activityLoaded = true;
+        loadActivity();
+      }}
+    }};
+
+    // After keys load, also update overview key table
+    const _origLoadKeys = loadKeys;
+    loadKeys = async function() {{
+      await _origLoadKeys();
+      if (overviewLoaded) renderOverviewKeys();
+    }};
+
     applySelfUseMode();
     showTab('tokens');
     showTokenSubTab('mine');
@@ -6014,6 +6811,7 @@ def render_user_page(user) -> str:
     loadProfile();
     loadTokens();
     loadKeys();
+    loadNotifications();
   </script>
 </body>
 </html>'''

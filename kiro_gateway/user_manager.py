@@ -53,11 +53,13 @@ class UserSessionManager:
             "session_version": session_version
         })
 
-    def verify_session(self, token: str) -> Optional[int]:
+    async def verify_session(self, token: str) -> Optional[int]:
         """
         Verify session token and return user_id if valid.
 
         Checks both token signature/expiry AND session_version against database.
+        In distributed mode, all nodes share the same USER_SESSION_SECRET,
+        so any node can verify cookies signed by any other node.
 
         Returns:
             user_id if valid, None otherwise
@@ -72,8 +74,10 @@ class UserSessionManager:
             if not user_id:
                 return None
 
-            # Verify session version against database
-            current_version = user_db.get_session_version(user_id)
+            # Verify session version against database (PostgreSQL in distributed mode)
+            # This ensures cross-node session revocation works:
+            # when admin increments session_version, all nodes will reject old tokens
+            current_version = await user_db.get_session_version(user_id)
             if token_version != current_version:
                 logger.debug(f"Session version mismatch for user {user_id}: token={token_version}, db={current_version}")
                 return None
@@ -405,12 +409,12 @@ class UserManager:
         session_token = self.session.create_session(user.id, user.session_version)
         return user, session_token
 
-    def get_current_user(self, session_token: str) -> Optional[User]:
+    async def get_current_user(self, session_token: str) -> Optional[User]:
         """Get current user from session token."""
-        user_id = self.session.verify_session(session_token)
+        user_id = await self.session.verify_session(session_token)
         if not user_id:
             return None
-        user = user_db.get_user(user_id)
+        user = await user_db.get_user(user_id)
         if user and (user.is_banned or user.approval_status != "approved"):
             return None
         return user
@@ -465,11 +469,12 @@ class UserManager:
         session_token = self.session.create_session(user.id, user.session_version)
         return user, session_token
 
-    def logout(self, user_id: int) -> bool:
+    async def logout(self, user_id: int) -> bool:
         """
         Logout user by incrementing session version.
 
-        This invalidates all existing session tokens for the user.
+        This invalidates all existing session tokens for the user
+        across all nodes in distributed mode (via PostgreSQL).
 
         Args:
             user_id: User ID to logout
@@ -477,9 +482,26 @@ class UserManager:
         Returns:
             True on success
         """
-        user_db.increment_session_version(user_id)
+        await user_db.increment_session_version(user_id)
         logger.info(f"User {user_id} logged out, session version incremented")
         return True
+
+    async def revoke_user_sessions(self, user_id: int) -> int:
+        """
+        Revoke all sessions for a user (admin action).
+
+        Increments session_version in the database, which causes all nodes
+        to reject existing session tokens for this user.
+
+        Args:
+            user_id: User ID whose sessions to revoke
+
+        Returns:
+            New session version
+        """
+        new_version = await user_db.increment_session_version(user_id)
+        logger.info(f"Admin revoked sessions for user {user_id}, new version={new_version}")
+        return new_version
 
 
 # Global user manager instance

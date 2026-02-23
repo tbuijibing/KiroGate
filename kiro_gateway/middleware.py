@@ -197,7 +197,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
             # Track API key and token usage for sk-xxx keys
             is_success = 200 <= response.status_code < 400
-            self._track_token_usage(request, is_success)
+            await self._track_token_usage(request, is_success)
 
             return response
 
@@ -208,14 +208,14 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             metrics.observe_latency(endpoint, process_time)
 
             # Track failed request
-            self._track_token_usage(request, success=False)
+            await self._track_token_usage(request, success=False)
             raise
 
         finally:
             # Decrement active connections
             metrics.dec_active_connections()
 
-    def _track_token_usage(self, request: Request, success: bool) -> None:
+    async def _track_token_usage(self, request: Request, success: bool) -> None:
         """Track usage for sk-xxx API keys."""
         try:
             # Check if request used a user API key
@@ -226,12 +226,13 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 token_id = request.state.donated_token_id
                 api_key_id = getattr(request.state, "api_key_id", None)
 
-                # Record token usage
-                token_allocator.record_usage(token_id, success)
+                # Record token usage and release concurrent count
+                await token_allocator.record_usage(token_id, success)
+                await token_allocator.release_token(token_id)
 
                 # Record API key usage
                 if api_key_id:
-                    user_db.record_api_key_usage(api_key_id)
+                    await user_db.record_api_key_usage(api_key_id)
 
         except Exception as e:
             logger.debug(f"[{get_timestamp()}] Token 使用追踪失败: {e}")

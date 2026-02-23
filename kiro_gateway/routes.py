@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿﻿# -*- coding: utf-8 -*-
 
 # KiroGate
 # Based on kiro-openai-gateway by Jwadow (https://github.com/Jwadow/kiro-openai-gateway)
@@ -299,6 +299,42 @@ async def _parse_auth_header(auth_header: str, request: Request = None) -> tuple
             logger.warning(f"[{get_timestamp()}] 被封禁用户尝试使用 API Key: 用户ID={user_id}")
             raise HTTPException(status_code=403, detail="用户已被封禁")
 
+        # Check user quota (daily/monthly)
+        from kiro_gateway.quota_manager import quota_manager
+        allowed, quota_info = await quota_manager.check_user_quota(user_id)
+        if not allowed:
+            retry_after = quota_info.get("retry_after", 60) if quota_info else 60
+            reset_at = quota_info.get("reset_at") if quota_info else None
+            reason = quota_info.get("reason", "quota_exceeded") if quota_info else "quota_exceeded"
+            logger.warning(f"[{get_timestamp()}] 用户 {user_id} 配额超限: {reason}")
+            detail = {
+                "error": "配额超限",
+                "reason": reason,
+                "retry_after": retry_after,
+            }
+            if reset_at:
+                detail["reset_at"] = reset_at
+            raise HTTPException(
+                status_code=429,
+                detail=detail,
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        # Check API Key RPM limit
+        rpm_allowed, rpm_retry_after = await quota_manager.check_api_key_rpm(api_key.id)
+        if not rpm_allowed:
+            retry_after = rpm_retry_after or 60
+            logger.warning(f"[{get_timestamp()}] API Key {api_key.id} RPM 超限")
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "API Key 速率限制",
+                    "reason": "api_key_rpm_exceeded",
+                    "retry_after": retry_after,
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+
         # Get best token for this user
         try:
             donated_token, auth_manager = await token_allocator.get_best_token(user_id)
@@ -309,6 +345,10 @@ async def _parse_auth_header(auth_header: str, request: Request = None) -> tuple
                 request.state.donated_token_id = donated_token.id
                 request.state.api_key_id = api_key.id
                 request.state.user_id = user_id
+
+            # Increment usage counters after successful token allocation
+            await quota_manager.increment_user_usage(user_id)
+            await quota_manager.increment_api_key_rpm(api_key.id)
 
             return token, auth_manager, user_id, api_key.id
         except NoTokenAvailable as e:
@@ -424,6 +464,42 @@ async def verify_anthropic_api_key(
                 logger.warning(f"[{get_timestamp()}] 被封禁用户尝试使用 API Key: 用户ID={user_id}")
                 raise HTTPException(status_code=403, detail="用户已被封禁")
 
+            # Check user quota (daily/monthly)
+            from kiro_gateway.quota_manager import quota_manager
+            allowed, quota_info = await quota_manager.check_user_quota(user_id)
+            if not allowed:
+                retry_after = quota_info.get("retry_after", 60) if quota_info else 60
+                reset_at = quota_info.get("reset_at") if quota_info else None
+                reason = quota_info.get("reason", "quota_exceeded") if quota_info else "quota_exceeded"
+                logger.warning(f"[{get_timestamp()}] 用户 {user_id} 配额超限: {reason}")
+                detail = {
+                    "error": "配额超限",
+                    "reason": reason,
+                    "retry_after": retry_after,
+                }
+                if reset_at:
+                    detail["reset_at"] = reset_at
+                raise HTTPException(
+                    status_code=429,
+                    detail=detail,
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+            # Check API Key RPM limit
+            rpm_allowed, rpm_retry_after = await quota_manager.check_api_key_rpm(api_key.id)
+            if not rpm_allowed:
+                retry_after = rpm_retry_after or 60
+                logger.warning(f"[{get_timestamp()}] API Key {api_key.id} RPM 超限")
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "error": "API Key 速率限制",
+                        "reason": "api_key_rpm_exceeded",
+                        "retry_after": retry_after,
+                    },
+                    headers={"Retry-After": str(retry_after)},
+                )
+
             try:
                 donated_token, auth_manager = await token_allocator.get_best_token(user_id)
                 logger.debug(f"[{get_timestamp()}] x-api-key 用户 API Key 模式: 用户ID={user_id}, Token ID={donated_token.id}")
@@ -431,6 +507,10 @@ async def verify_anthropic_api_key(
                 request.state.donated_token_id = donated_token.id
                 request.state.api_key_id = api_key.id
                 request.state.user_id = user_id
+
+                # Increment usage counters after successful token allocation
+                await quota_manager.increment_user_usage(user_id)
+                await quota_manager.increment_api_key_rpm(api_key.id)
 
                 return auth_manager
             except NoTokenAvailable as e:
@@ -570,7 +650,21 @@ async def health(request: Request):
 
     Returns:
         Status, timestamp, version and runtime info
+        
+    During shutdown, returns 503 Service Unavailable.
+    
+    In distributed mode, also returns PostgreSQL and Redis connection status.
     """
+    # 检查是否正在关闭
+    if hasattr(request.app.state, 'is_shutting_down') and request.app.state.is_shutting_down:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "shutting_down",
+                "message": "Service is shutting down"
+            }
+        )
+    
     from kiro_gateway.metrics import metrics
 
     auth_manager: KiroAuthManager = request.app.state.auth_manager
@@ -588,14 +682,61 @@ async def health(request: Request):
     metrics.set_cache_size(model_cache.size)
     metrics.set_token_valid(token_valid)
 
-    return {
+    # Calculate uptime
+    uptime = int(metrics._start_time and (datetime.now(timezone.utc).timestamp() - metrics._start_time) or 0)
+
+    # Base response
+    response = {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": APP_VERSION,
         "token_valid": token_valid,
         "cache_size": model_cache.size,
-        "cache_last_update": model_cache.last_update_time
+        "cache_last_update": model_cache.last_update_time,
+        "uptime": uptime,
     }
+
+    # Add distributed mode information
+    if settings.is_distributed:
+        response["mode"] = "distributed"
+        response["node_id"] = settings.node_id
+
+        # Check PostgreSQL connection status
+        postgres_status = "disconnected"
+        try:
+            from kiro_gateway.database import user_db
+            if user_db._backend:
+                # Try a simple query to check connection
+                await user_db._backend.fetch_one("SELECT 1 as test")
+                postgres_status = "connected"
+        except Exception as e:
+            logger.debug(f"PostgreSQL health check failed: {e}")
+            postgres_status = "disconnected"
+            # Return 503 if PostgreSQL is down
+            response["status"] = "unhealthy"
+            response["postgres"] = postgres_status
+            return JSONResponse(status_code=503, content=response)
+
+        response["postgres"] = postgres_status
+
+        # Check Redis connection status
+        redis_status = "disconnected"
+        try:
+            from kiro_gateway.redis_manager import redis_manager
+            if redis_manager.is_available:
+                client = await redis_manager.get_client()
+                if client:
+                    await client.ping()
+                    redis_status = "connected"
+        except Exception as e:
+            logger.debug(f"Redis health check failed: {e}")
+            redis_status = "disconnected"
+
+        response["redis"] = redis_status
+    else:
+        response["mode"] = "single_node"
+
+    return response
 
 
 @router.get("/api/site-mode", include_in_schema=False)
@@ -2377,7 +2518,7 @@ async def oauth2_logout(request: Request):
     from kiro_gateway.user_manager import user_manager
 
     # Get current user before clearing cookie
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if user:
         # Increment session version to invalidate all existing tokens
         user_manager.logout(user.id)
@@ -2392,7 +2533,7 @@ async def oauth2_logout(request: Request):
 @router.get("/login", response_class=HTMLResponse, include_in_schema=False)
 async def login_page(request: Request):
     """Login selection page with multiple OAuth2 providers."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if user:
         redirect_url = f"{_request_origin(request)}/user"
         return RedirectResponse(url=redirect_url, status_code=303)
@@ -2403,7 +2544,7 @@ async def login_page(request: Request):
 @router.get("/register", response_class=HTMLResponse, include_in_schema=False)
 async def register_page(request: Request):
     """Register page."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if user:
         redirect_url = f"{_request_origin(request)}/user"
         return RedirectResponse(url=redirect_url, status_code=303)
@@ -2521,17 +2662,17 @@ async def github_oauth2_callback(request: Request, code: str = None, state: str 
 
 # ==================== User Routes (Hidden from Swagger) ====================
 
-def get_current_user(request: Request):
+async def get_current_user(request: Request):
     """Get current logged-in user from session."""
     from kiro_gateway.user_manager import user_manager
     session_token = request.cookies.get("user_session")
-    return user_manager.get_current_user(session_token) if session_token else None
+    return await user_manager.get_current_user(session_token) if session_token else None
 
 
 @router.get("/user", response_class=HTMLResponse, include_in_schema=False)
 async def user_page(request: Request):
     """User dashboard page."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     from kiro_gateway.pages import render_user_page
@@ -2541,7 +2682,7 @@ async def user_page(request: Request):
 @router.get("/user/api/profile", include_in_schema=False)
 async def user_get_profile(request: Request):
     """Get current user profile."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.database import user_db
@@ -2568,7 +2709,7 @@ async def user_get_announcement(request: Request):
     announcement = user_db.get_active_announcement()
     if not announcement:
         return {"active": False}
-    user = get_current_user(request)
+    user = await get_current_user(request)
     allow_guest = bool(announcement.get("allow_guest"))
     if not user:
         if not allow_guest:
@@ -2605,7 +2746,7 @@ async def user_mark_announcement_read(
     _csrf: None = Depends(require_same_origin)
 ):
     """Mark announcement as read."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.database import user_db
@@ -2623,7 +2764,7 @@ async def user_mark_announcement_dismissed(
     _csrf: None = Depends(require_same_origin)
 ):
     """Dismiss announcement for current user."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.database import user_db
@@ -2645,7 +2786,7 @@ async def user_get_tokens(
     sort_order: str = Query("desc")
 ):
     """Get user's tokens."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.database import user_db
@@ -2694,7 +2835,7 @@ async def user_get_tokens(
 @router.get("/user/api/public-tokens", include_in_schema=False)
 async def user_get_public_tokens(request: Request):
     """Get public tokens with contributor info for user page."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.metrics import metrics
@@ -3087,7 +3228,7 @@ async def user_donate_token(
     _csrf: None = Depends(require_same_origin)
 ):
     """Donate a new token."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
@@ -3153,7 +3294,7 @@ async def user_import_tokens(
     _csrf: None = Depends(require_same_origin)
 ):
     """Import refresh tokens from a JSON file."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
@@ -3250,7 +3391,7 @@ async def user_update_token(
     _csrf: None = Depends(require_same_origin)
 ):
     """Update token visibility."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
@@ -3276,7 +3417,7 @@ async def user_delete_token(
     _csrf: None = Depends(require_same_origin)
 ):
     """Delete a token."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
@@ -3291,7 +3432,7 @@ async def user_get_token_account_info(
     token_id: int,
 ):
     """获取指定 Token 的账号信息（订阅、额度等）"""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
@@ -3352,7 +3493,7 @@ async def user_get_keys(
     sort_order: str = Query("desc")
 ):
     """Get user's API keys."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.database import user_db
@@ -3392,7 +3533,7 @@ async def user_create_key(
     _csrf: None = Depends(require_same_origin)
 ):
     """Generate a new API key."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
@@ -3426,7 +3567,7 @@ async def user_update_key(
     _csrf: None = Depends(require_same_origin)
 ):
     """Enable or disable an API key."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
@@ -3444,7 +3585,7 @@ async def user_delete_key(
     _csrf: None = Depends(require_same_origin)
 ):
     """Delete an API key."""
-    user = get_current_user(request)
+    user = await get_current_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
@@ -3459,7 +3600,7 @@ async def user_delete_key(
 async def public_tokens_page(request: Request):
     """Public token pool page."""
     from kiro_gateway.pages import render_tokens_page
-    user = get_current_user(request)
+    user = await get_current_user(request)
     return HTMLResponse(content=render_tokens_page(user))
 
 
@@ -3483,3 +3624,826 @@ async def get_public_tokens():
         ],
         "count": len(tokens)
     }
+
+
+# ==================== User Panel Data API ====================
+
+
+@router.get("/user/api/stats", include_in_schema=False)
+async def user_get_stats(request: Request):
+    """Get user usage statistics."""
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+
+    from kiro_gateway.database import user_db
+
+    now = datetime.now(timezone.utc)
+    today_start_ms = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+    month_start_ms = int(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+    total_row = await user_db._backend.fetch_one(
+        "SELECT COUNT(*) as cnt FROM activity_logs WHERE user_id = ?",
+        (user.id,),
+    )
+    total_requests = total_row["cnt"] if total_row else 0
+
+    today_row = await user_db._backend.fetch_one(
+        "SELECT COUNT(*) as cnt FROM activity_logs WHERE user_id = ? AND created_at >= ?",
+        (user.id, today_start_ms),
+    )
+    today_requests = today_row["cnt"] if today_row else 0
+
+    month_row = await user_db._backend.fetch_one(
+        "SELECT COUNT(*) as cnt FROM activity_logs WHERE user_id = ? AND created_at >= ?",
+        (user.id, month_start_ms),
+    )
+    month_requests = month_row["cnt"] if month_row else 0
+
+    success_row = await user_db._backend.fetch_one(
+        "SELECT COUNT(*) as cnt FROM activity_logs WHERE user_id = ? AND status_code >= 200 AND status_code < 300",
+        (user.id,),
+    )
+    success_count = success_row["cnt"] if success_row else 0
+    success_rate = round(success_count / total_requests * 100, 1) if total_requests > 0 else 100.0
+
+    token_row = await user_db._backend.fetch_one(
+        "SELECT COUNT(*) as cnt FROM tokens WHERE user_id = ?",
+        (user.id,),
+    )
+    donated_token_count = token_row["cnt"] if token_row else 0
+
+    return {
+        "total_requests": total_requests,
+        "today_requests": today_requests,
+        "month_requests": month_requests,
+        "success_rate": success_rate,
+        "donated_token_count": donated_token_count,
+    }
+
+
+@router.get("/user/api/quota", include_in_schema=False)
+async def user_get_quota(request: Request):
+    """Get user quota usage info."""
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+
+    from kiro_gateway.quota_manager import quota_manager
+
+    quota_info = await quota_manager.get_user_quota_info(user.id)
+    return quota_info
+
+
+@router.get("/user/api/token-health", include_in_schema=False)
+async def user_get_token_health(request: Request):
+    """Get health status of user's donated tokens."""
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+
+    from kiro_gateway.database import user_db
+
+    rows = await user_db._backend.fetch_all(
+        """SELECT id, status, success_count, fail_count, last_used,
+                  risk_score, consecutive_fails
+           FROM tokens WHERE user_id = ?""",
+        (user.id,),
+    )
+
+    tokens = []
+    for row in rows:
+        total = row["success_count"] + row["fail_count"]
+        sr = round(row["success_count"] / total * 100, 1) if total > 0 else 100.0
+        tokens.append({
+            "id": row["id"],
+            "status": row["status"],
+            "success_rate": sr,
+            "last_used_at": row["last_used"],
+            "risk_score": round(row["risk_score"], 3) if row["risk_score"] else 0.0,
+            "consecutive_fails": row["consecutive_fails"] or 0,
+        })
+
+    return {"tokens": tokens}
+
+
+@router.get("/user/api/activity", include_in_schema=False)
+async def user_get_activity(request: Request):
+    """Get recent API request records (last 50)."""
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+
+    from kiro_gateway.database import user_db
+
+    rows = await user_db._backend.fetch_all(
+        """SELECT model, status_code, latency_ms, created_at
+           FROM activity_logs WHERE user_id = ?
+           ORDER BY created_at DESC LIMIT 50""",
+        (user.id,),
+    )
+
+    return {
+        "records": [
+            {
+                "model": row["model"],
+                "status_code": row["status_code"],
+                "latency_ms": row["latency_ms"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/user/api/notifications", include_in_schema=False)
+async def user_get_notifications(request: Request):
+    """Get unread notifications."""
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+
+    from kiro_gateway.database import user_db
+
+    rows = await user_db._backend.fetch_all(
+        """SELECT id, type, message, is_read, created_at
+           FROM user_notifications WHERE user_id = ? AND is_read = 0
+           ORDER BY created_at DESC""",
+        (user.id,),
+    )
+
+    return {
+        "notifications": [
+            {
+                "id": row["id"],
+                "type": row["type"],
+                "message": row["message"],
+                "is_read": bool(row["is_read"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/user/api/notifications/read", include_in_schema=False)
+async def user_mark_notification_read(request: Request, notification_id: int = Form(...)):
+    """Mark a notification as read."""
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+    from kiro_gateway.notification_manager import notification_manager
+
+    await notification_manager.mark_read(user.id, notification_id)
+    return {"success": True}
+
+
+@router.post("/user/api/notifications/read-all", include_in_schema=False)
+async def user_mark_all_notifications_read(request: Request):
+    """Mark all notifications as read."""
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+    from kiro_gateway.notification_manager import notification_manager
+
+    await notification_manager.mark_all_read(user.id)
+    return {"success": True}
+
+
+# ============================================================
+# 管理面板 - 集群概览与 Token 池状态 API（分布式部署）
+# ============================================================
+
+
+def _calculate_risk_score(risk_data: dict, token=None) -> float:
+    """
+    计算 Token 风险评分 (0.0 - 1.0)。
+
+    因子：
+    - RPM 使用率 (权重 0.3)
+    - RPH 使用率 (权重 0.3)
+    - 失败率 (权重 0.2)
+    - 连续失败次数 (权重 0.2)
+    """
+    from kiro_gateway.config import settings
+
+    rpm = risk_data.get("rpm", 0)
+    rph = risk_data.get("rph", 0)
+    consecutive_fails = risk_data.get("consecutive_fails", 0)
+
+    rpm_ratio = min(1.0, rpm / max(1, settings.token_rpm_limit))
+    rph_ratio = min(1.0, rph / max(1, settings.token_rph_limit))
+
+    # 失败率：从 token 对象获取
+    fail_ratio = 0.0
+    if token:
+        total = token.success_count + token.fail_count
+        if total > 0:
+            fail_ratio = token.fail_count / total
+
+    consec_ratio = min(1.0, consecutive_fails / 5)
+
+    return round(0.3 * rpm_ratio + 0.3 * rph_ratio + 0.2 * fail_ratio + 0.2 * consec_ratio, 4)
+
+
+@router.get("/admin/api/cluster", include_in_schema=False)
+async def admin_get_cluster(request: Request):
+    """
+    集群概览 API。
+
+    返回在线节点、全局 Token 池状态、集群实时聚合指标。
+    单节点模式下返回当前节点信息。
+    """
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.config import settings
+    from kiro_gateway.metrics import metrics
+    from kiro_gateway.database import user_db
+    from kiro_gateway.token_allocator import token_allocator
+
+    import time
+
+    # --- 节点信息 ---
+    nodes = []
+    if settings.is_distributed:
+        from kiro_gateway.heartbeat import NodeHeartbeat
+        nodes = await NodeHeartbeat.get_online_nodes()
+    else:
+        # 单节点模式：返回当前节点信息
+        nodes = [{
+            "node_id": settings.node_id,
+            "status": "online",
+            "uptime": int(time.time() - metrics._start_time),
+            "connections": metrics._active_connections,
+            "last_heartbeat": int(time.time()),
+            "requests_1m": len(metrics._response_times) if hasattr(metrics, "_response_times") else 0,
+        }]
+
+    # --- Token 池概要 ---
+    all_tokens = await user_db.get_all_active_tokens()
+    now = int(time.time())
+    token_pool_summary = {
+        "total": len(all_tokens),
+        "active": 0,
+        "cooldown": 0,
+        "suspended": 0,
+    }
+    for t in all_tokens:
+        if t.status == "active" and t.cooldown_until <= now:
+            token_pool_summary["active"] += 1
+        elif t.cooldown_until > now:
+            token_pool_summary["cooldown"] += 1
+        else:
+            token_pool_summary["suspended"] += 1
+
+    # --- 集群聚合指标 ---
+    cluster_metrics = await _get_cluster_aggregated_metrics()
+
+    return {
+        "nodes": nodes,
+        "online_count": len(nodes),
+        "token_pool": token_pool_summary,
+        "cluster_metrics": cluster_metrics,
+    }
+
+
+async def _get_cluster_aggregated_metrics() -> dict:
+    """
+    获取集群实时聚合指标：总请求数、成功率、平均延迟、P95/P99 延迟。
+    """
+    from kiro_gateway.metrics import metrics
+
+    try:
+        full_metrics = await metrics.get_metrics()
+
+        # 提取请求数据
+        requests_data = full_metrics.get("requests", {})
+        if isinstance(requests_data.get("total"), dict):
+            total_requests = sum(requests_data["total"].values())
+        else:
+            total_requests = requests_data.get("total", 0)
+
+        by_status = requests_data.get("by_status", {})
+        success_count = sum(
+            int(v) for k, v in by_status.items()
+            if k.isdigit() and 200 <= int(k) < 400
+        )
+        success_rate = round(success_count / max(1, total_requests), 4)
+
+        # 提取延迟数据
+        latency_data = full_metrics.get("latency", {})
+        avg_latency = 0.0
+        p95_latency = 0.0
+        p99_latency = 0.0
+        total_latency_count = 0
+
+        for _ep, stats in latency_data.items():
+            count = stats.get("count", 0)
+            if count > 0:
+                avg_latency += stats.get("avg", 0) * count
+                p95_latency = max(p95_latency, stats.get("p95", 0))
+                p99_latency = max(p99_latency, stats.get("p99", 0))
+                total_latency_count += count
+
+        if total_latency_count > 0:
+            avg_latency = round(avg_latency / total_latency_count, 4)
+
+        return {
+            "total_requests": total_requests,
+            "success_rate": success_rate,
+            "avg_latency": avg_latency,
+            "p95_latency": round(p95_latency, 4),
+            "p99_latency": round(p99_latency, 4),
+        }
+    except Exception as e:
+        logger.warning(f"获取集群聚合指标失败: {e}")
+        return {
+            "total_requests": 0,
+            "success_rate": 0.0,
+            "avg_latency": 0.0,
+            "p95_latency": 0.0,
+            "p99_latency": 0.0,
+        }
+
+
+@router.get("/admin/api/tokens/pool", include_in_schema=False)
+async def admin_get_token_pool(request: Request):
+    """
+    全局 Token 池状态 API。
+
+    返回每个 Token 的 Risk_Score、RPM/RPH 使用量、并发数、连续失败次数、状态。
+    """
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    import time
+    from kiro_gateway.config import settings
+    from kiro_gateway.database import user_db
+    from kiro_gateway.token_allocator import token_allocator
+
+    # 获取所有 Token（包括非 active 的）
+    all_tokens = await user_db._backend.fetch_all(
+        "SELECT * FROM tokens ORDER BY id",
+        (),
+    )
+
+    now = int(time.time())
+    pool = []
+
+    for row in all_tokens:
+        token_id = row["id"]
+        status = row.get("status", "unknown")
+        consecutive_fails = row.get("consecutive_fails", 0)
+        cooldown_until = row.get("cooldown_until", 0)
+
+        # 获取实时风控数据
+        risk_data = await token_allocator.get_risk_data(token_id)
+        risk_data["consecutive_fails"] = consecutive_fails
+
+        success_count = row.get("success_count", 0)
+        fail_count = row.get("fail_count", 0)
+
+        # 用 SimpleNamespace 传递 success/fail 计数给 risk_score 计算
+        from types import SimpleNamespace
+        token_like = SimpleNamespace(success_count=success_count, fail_count=fail_count)
+        risk_score = _calculate_risk_score(risk_data, token_like)
+
+        # 判断实际状态
+        display_status = status
+        if status == "active" and cooldown_until > now:
+            display_status = "cooldown"
+        if risk_data.get("in_cooldown", False):
+            display_status = "cooldown"
+
+        pool.append({
+            "id": token_id,
+            "status": display_status,
+            "risk_score": risk_score,
+            "rpm": risk_data.get("rpm", 0),
+            "rpm_limit": settings.token_rpm_limit,
+            "rph": risk_data.get("rph", 0),
+            "rph_limit": settings.token_rph_limit,
+            "concurrent": risk_data.get("concurrent", 0),
+            "concurrent_limit": settings.token_max_concurrent,
+            "consecutive_fails": consecutive_fails,
+            "success_count": success_count,
+            "fail_count": fail_count,
+            "success_rate": round(success_count / max(1, success_count + fail_count), 4),
+            "last_used": row.get("last_used"),
+            "cooldown_until": cooldown_until if cooldown_until > now else None,
+        })
+
+    return {
+        "tokens": pool,
+        "total": len(pool),
+        "limits": {
+            "rpm": settings.token_rpm_limit,
+            "rph": settings.token_rph_limit,
+            "max_concurrent": settings.token_max_concurrent,
+            "max_consecutive_uses": settings.token_max_consecutive_uses,
+        },
+    }
+
+
+# ==================== Token 风控管理接口 ====================
+
+
+@router.post("/admin/api/tokens/pause", include_in_schema=False)
+async def admin_pause_token(
+    request: Request,
+    token_id: int = Form(...),
+    _csrf: None = Depends(require_same_origin),
+):
+    """手动暂停单个 Token。"""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.database import user_db
+
+    token = await user_db.get_token_by_id(token_id)
+    if not token:
+        return JSONResponse(status_code=404, content={"error": "Token 不存在"})
+
+    await user_db.set_token_status(token_id, "suspended")
+    await log_audit(request, "token_pause", "token", token_id, f"手动暂停 Token #{token_id}")
+    return {"success": True, "token_id": token_id, "status": "suspended"}
+
+
+@router.post("/admin/api/tokens/resume", include_in_schema=False)
+async def admin_resume_token(
+    request: Request,
+    token_id: int = Form(...),
+    _csrf: None = Depends(require_same_origin),
+):
+    """手动恢复单个 Token，重置冷却和连续失败计数。"""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.database import user_db
+
+    token = await user_db.get_token_by_id(token_id)
+    if not token:
+        return JSONResponse(status_code=404, content={"error": "Token 不存在"})
+
+    await user_db.set_token_status(token_id, "active")
+    await user_db.update_token_risk_fields(
+        token_id,
+        consecutive_fails=0,
+        cooldown_until=0,
+    )
+    await log_audit(request, "token_resume", "token", token_id, f"手动恢复 Token #{token_id}")
+    return {"success": True, "token_id": token_id, "status": "active"}
+
+
+@router.post("/admin/api/tokens/batch-pause-risky", include_in_schema=False)
+async def admin_batch_pause_risky(
+    request: Request,
+    _csrf: None = Depends(require_same_origin),
+):
+    """批量暂停所有高风险 Token（Risk_Score > 0.7）。"""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from types import SimpleNamespace
+    from kiro_gateway.database import user_db
+    from kiro_gateway.token_allocator import token_allocator
+
+    all_tokens = await user_db.get_all_active_tokens()
+    paused_count = 0
+
+    for token in all_tokens:
+        risk_data = await token_allocator.get_risk_data(token.id)
+        risk_data["consecutive_fails"] = token.consecutive_fails
+        risk_score = _calculate_risk_score(risk_data, token)
+
+        if risk_score > 0.7:
+            await user_db.set_token_status(token.id, "suspended")
+            paused_count += 1
+
+    await log_audit(request, "token_batch_pause", "token", "batch", f"批量暂停高风险 Token，共 {paused_count} 个")
+    return {"success": True, "paused_count": paused_count}
+
+
+# ==================== 用户配额配置与批量管理接口 ====================
+
+
+@router.post("/admin/api/users/quota", include_in_schema=False)
+async def admin_set_user_quota(
+    request: Request,
+    user_id: int = Form(...),
+    daily_quota: Optional[int] = Form(None),
+    monthly_quota: Optional[int] = Form(None),
+    _csrf: None = Depends(require_same_origin),
+):
+    """管理员为单个用户设置自定义每日/每月配额。"""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    if daily_quota is None and monthly_quota is None:
+        return JSONResponse(status_code=400, content={"error": "请至少提供 daily_quota 或 monthly_quota"})
+
+    from kiro_gateway.database import user_db
+    from kiro_gateway.quota_manager import quota_manager
+
+    # 验证用户存在
+    user = await user_db.get_user(user_id)
+    if not user:
+        return JSONResponse(status_code=404, content={"error": "用户不存在"})
+
+    # 确保用户配额行存在
+    await quota_manager._ensure_user_quota_row(user_id)
+
+    # 更新配额
+    updates = []
+    params = []
+    if daily_quota is not None:
+        updates.append("daily_quota = ?")
+        params.append(daily_quota)
+    if monthly_quota is not None:
+        updates.append("monthly_quota = ?")
+        params.append(monthly_quota)
+    params.append(user_id)
+
+    await user_db._backend.execute(
+        f"UPDATE user_quotas SET {', '.join(updates)} WHERE user_id = ?",
+        tuple(params),
+    )
+
+    details = f"设置用户 #{user_id} 配额: daily={daily_quota}, monthly={monthly_quota}"
+    await log_audit(request, "quota_update", "user", user_id, details)
+
+    return {
+        "success": True,
+        "user_id": user_id,
+        "daily_quota": daily_quota,
+        "monthly_quota": monthly_quota,
+    }
+
+
+@router.post("/admin/api/users/batch-approve", include_in_schema=False)
+async def admin_batch_approve_users(
+    request: Request,
+    user_ids: str = Form(...),
+    _csrf: None = Depends(require_same_origin),
+):
+    """批量审批待审核用户。"""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.database import user_db
+
+    # 解析用户 ID 列表
+    try:
+        id_list = [int(uid.strip()) for uid in user_ids.split(",") if uid.strip()]
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "user_ids 格式无效"})
+
+    if not id_list:
+        return JSONResponse(status_code=400, content={"error": "user_ids 不能为空"})
+
+    approved_count = 0
+    for uid in id_list:
+        try:
+            await user_db.set_user_approval_status(uid, "approved")
+            approved_count += 1
+        except Exception:
+            pass  # 跳过不存在或已审批的用户
+
+    await log_audit(request, "user_batch_approve", "user", user_ids, f"批量审批 {approved_count} 个用户")
+    return {"success": True, "approved_count": approved_count}
+
+
+@router.post("/admin/api/users/batch-ban", include_in_schema=False)
+async def admin_batch_ban_users(
+    request: Request,
+    user_ids: str = Form(...),
+    _csrf: None = Depends(require_same_origin),
+):
+    """批量封禁违规用户。"""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.database import user_db
+
+    # 解析用户 ID 列表
+    try:
+        id_list = [int(uid.strip()) for uid in user_ids.split(",") if uid.strip()]
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "user_ids 格式无效"})
+
+    if not id_list:
+        return JSONResponse(status_code=400, content={"error": "user_ids 不能为空"})
+
+    banned_count = 0
+    for uid in id_list:
+        try:
+            await user_db.set_user_banned(uid, True)
+            banned_count += 1
+        except Exception:
+            pass  # 跳过不存在的用户
+
+    await log_audit(request, "user_batch_ban", "user", user_ids, f"批量封禁 {banned_count} 个用户")
+    return {"success": True, "banned_count": banned_count}
+
+
+# ==================== 审计日志系统 ====================
+
+
+async def log_audit(
+    request: Request,
+    admin_action: str,
+    target_type: str,
+    target_id,
+    details: str = "",
+) -> None:
+    """
+    记录管理员操作审计日志。
+
+    Args:
+        request: 当前请求对象，用于获取管理员 IP
+        admin_action: 操作类型 (token_pause, user_ban, quota_update, config_reload 等)
+        target_type: 目标类型 (token, user, config 等)
+        target_id: 目标 ID
+        details: 操作详情（可选）
+    """
+    import time
+    from kiro_gateway.database import user_db
+
+    admin_ip = request.client.host if request.client else "unknown"
+    now = int(time.time() * 1000)
+
+    try:
+        await user_db._backend.execute(
+            """INSERT INTO audit_logs (admin_username, action_type, target_type, target_id, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("admin", admin_action, target_type, str(target_id), details, now),
+        )
+    except Exception as e:
+        logger.warning(f"审计日志写入失败: {e}")
+
+
+@router.get("/admin/api/audit-logs", include_in_schema=False)
+async def admin_get_audit_logs(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    action: Optional[str] = Query(None),
+    start_time: Optional[int] = Query(None),
+    end_time: Optional[int] = Query(None),
+):
+    """查询审计日志，支持按操作类型和时间范围筛选。"""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.database import user_db
+
+    where = []
+    params = []
+
+    if action:
+        where.append("action_type = ?")
+        params.append(action)
+    if start_time is not None:
+        where.append("created_at >= ?")
+        params.append(start_time)
+    if end_time is not None:
+        where.append("created_at <= ?")
+        params.append(end_time)
+
+    where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    # 获取总数
+    count_row = await user_db._backend.fetch_one(
+        f"SELECT COUNT(*) as cnt FROM audit_logs{where_clause}",
+        tuple(params),
+    )
+    total = count_row["cnt"] if count_row else 0
+
+    # 分页查询
+    offset = (page - 1) * page_size
+    query_params = list(params) + [page_size, offset]
+    rows = await user_db._backend.fetch_all(
+        f"SELECT * FROM audit_logs{where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        tuple(query_params),
+    )
+
+    logs = []
+    for row in rows:
+        logs.append({
+            "id": row["id"],
+            "admin_username": row.get("admin_username", "admin"),
+            "action_type": row["action_type"],
+            "target_type": row.get("target_type"),
+            "target_id": row.get("target_id"),
+            "details": row.get("details"),
+            "created_at": row["created_at"],
+        })
+
+    return {
+        "logs": logs,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+# ==================== 配置热重载功能 ====================
+
+
+@router.post("/admin/config/reload", include_in_schema=False)
+async def admin_config_reload(
+    request: Request,
+    config_key: str = Form(...),
+    config_value: str = Form(...),
+    _csrf: None = Depends(require_same_origin),
+):
+    """
+    热重载配置项。
+
+    将配置存储到 Redis Hash 并通过 Pub/Sub 通知所有节点更新。
+    单节点模式下直接更新内存配置。
+    """
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.config_reloader import HOT_RELOAD_KEYS, REDIS_CONFIG_HASH, REDIS_CONFIG_CHANNEL, _apply_config
+
+    if config_key not in HOT_RELOAD_KEYS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"不支持热重载的配置项: {config_key}，支持: {', '.join(sorted(HOT_RELOAD_KEYS))}"},
+        )
+
+    # 验证值是否为有效整数
+    try:
+        int(config_value)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": f"配置值必须为整数: {config_value}"})
+
+    from kiro_gateway.redis_manager import redis_manager
+
+    client = await redis_manager.get_client()
+    if client:
+        # 分布式模式：存储到 Redis Hash 并发布通知
+        try:
+            await client.hset(REDIS_CONFIG_HASH, config_key, config_value)
+            await client.publish(REDIS_CONFIG_CHANNEL, json.dumps([config_key]))
+        except Exception as e:
+            logger.warning(f"Redis 配置更新失败: {e}，仅更新本地配置")
+            _apply_config(settings, config_key, config_value)
+    else:
+        # 单节点模式：直接更新内存配置
+        _apply_config(settings, config_key, config_value)
+
+    await log_audit(request, "config_reload", "config", config_key, f"{config_key}={config_value}")
+
+    return {
+        "success": True,
+        "config_key": config_key,
+        "config_value": config_value,
+        "mode": "distributed" if client else "local",
+    }
+
+
+@router.get("/admin/api/config/hot-reload", include_in_schema=False)
+async def admin_get_hot_reload_config(request: Request):
+    """获取当前可热重载的配置值。"""
+    session = request.cookies.get("admin_session")
+    if not verify_admin_session(session):
+        return JSONResponse(status_code=401, content={"error": "未授权"})
+
+    from kiro_gateway.config_reloader import HOT_RELOAD_KEYS, REDIS_CONFIG_HASH
+    from kiro_gateway.redis_manager import redis_manager
+
+    # 优先从 Redis 读取（分布式模式）
+    config_values = {}
+    client = await redis_manager.get_client()
+    if client:
+        try:
+            redis_config = await client.hgetall(REDIS_CONFIG_HASH)
+            for key in HOT_RELOAD_KEYS:
+                if key in redis_config:
+                    config_values[key] = int(redis_config[key])
+                else:
+                    config_values[key] = getattr(settings, key)
+        except Exception:
+            # Redis 读取失败，降级为本地配置
+            for key in HOT_RELOAD_KEYS:
+                config_values[key] = getattr(settings, key)
+    else:
+        # 单节点模式：从本地 settings 读取
+        for key in HOT_RELOAD_KEYS:
+            config_values[key] = getattr(settings, key)
+
+    return {"config": config_values}

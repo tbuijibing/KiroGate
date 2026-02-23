@@ -1,0 +1,155 @@
+# KiroGate - 分布式部署 Docker Compose 配置
+#
+# 使用方法:
+#   1. 复制 .env.example 为 .env 并配置所有必填项
+#   2. docker compose -f docker-compose.distributed.yml up -d --scale kirogate=3
+#
+# 副本数调整:
+#   docker compose -f docker-compose.distributed.yml up -d --scale kirogate=5
+#
+# 必填环境变量:
+#   - PROXY_API_KEY: 代理服务器密码
+#   - ADMIN_PASSWORD: 管理后台密码
+#   - ADMIN_SECRET_KEY: 管理后台签名密钥（分布式模式必须修改默认值）
+#   - USER_SESSION_SECRET: 用户会话签名密钥（分布式模式必须修改默认值）
+#   - TOKEN_ENCRYPT_KEY: Token 加密密钥（所有节点必须一致）
+
+services:
+  # ============================================================
+  # PostgreSQL - 共享持久化存储
+  # ============================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: kirogate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kirogate
+      POSTGRES_USER: kirogate
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-changeme}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kirogate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ============================================================
+  # Redis - 分布式缓存/锁/计数器
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: kirogate-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ============================================================
+  # KiroGate 应用服务 - 多副本
+  # ============================================================
+  kirogate:
+    build: .
+    restart: unless-stopped
+    # 使用 docker compose up --scale kirogate=3 来设置副本数
+    # 默认启动 1 个实例，通过 --scale 参数可以扩展到多个副本
+    environment:
+      # 数据库与 Redis 连接（分布式模式）
+      - DATABASE_URL=postgresql+asyncpg://kirogate:${PG_PASSWORD:-changeme}@postgres:5432/kirogate
+      - REDIS_URL=redis://redis:6379/0
+
+      # 必填: 代理服务器密码
+      - PROXY_API_KEY=${PROXY_API_KEY:-change-me-in-production}
+
+      # 必填: 管理后台
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-change-me-in-production}
+      - ADMIN_SECRET_KEY=${ADMIN_SECRET_KEY:-change-me-in-production}
+
+      # 必填: 用户会话与 Token 加密（所有节点必须一致）
+      - USER_SESSION_SECRET=${USER_SESSION_SECRET:-change-me-in-production}
+      - TOKEN_ENCRYPT_KEY=${TOKEN_ENCRYPT_KEY:-change-me-in-production}
+
+      # 可选: Kiro 认证配置
+      - REFRESH_TOKEN=${REFRESH_TOKEN:-}
+      - KIRO_CREDS_FILE=${KIRO_CREDS_FILE:-}
+      - PROFILE_ARN=${PROFILE_ARN:-}
+      - KIRO_REGION=${KIRO_REGION:-us-east-1}
+
+      # 可选: OAuth2 用户登录
+      - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID:-}
+      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET:-}
+      - OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI:-}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - GITHUB_REDIRECT_URI=${GITHUB_REDIRECT_URI:-}
+
+      # 可选: 连接池配置
+      - DB_POOL_SIZE=${DB_POOL_SIZE:-20}
+      - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-10}
+      - REDIS_MAX_CONNECTIONS=${REDIS_MAX_CONNECTIONS:-50}
+
+      # 可选: Token 防风控配置
+      - TOKEN_RPM_LIMIT=${TOKEN_RPM_LIMIT:-10}
+      - TOKEN_RPH_LIMIT=${TOKEN_RPH_LIMIT:-200}
+      - TOKEN_MAX_CONCURRENT=${TOKEN_MAX_CONCURRENT:-2}
+      - TOKEN_MAX_CONSECUTIVE_USES=${TOKEN_MAX_CONSECUTIVE_USES:-5}
+
+      # 可选: 用户配额配置
+      - DEFAULT_USER_DAILY_QUOTA=${DEFAULT_USER_DAILY_QUOTA:-500}
+      - DEFAULT_USER_MONTHLY_QUOTA=${DEFAULT_USER_MONTHLY_QUOTA:-10000}
+      - DEFAULT_KEY_RPM_LIMIT=${DEFAULT_KEY_RPM_LIMIT:-30}
+
+      # 可选: 超时与日志
+      - FIRST_TOKEN_TIMEOUT=${FIRST_TOKEN_TIMEOUT:-45}
+      - FIRST_TOKEN_MAX_RETRIES=${FIRST_TOKEN_MAX_RETRIES:-5}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEBUG_MODE=${DEBUG_MODE:-off}
+
+      # 可选: 静态资源代理
+      - STATIC_ASSETS_PROXY_ENABLED=${STATIC_ASSETS_PROXY_ENABLED:-true}
+      - STATIC_ASSETS_PROXY_BASE=${STATIC_ASSETS_PROXY_BASE:-https://proxy.jhun.edu.kg}
+
+      # NODE_ID 由每个容器自动生成，无需手动配置
+    volumes:
+      - kirogate_data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # ============================================================
+  # Nginx - 负载均衡与反向代理
+  # ============================================================
+  nginx:
+    image: nginx:alpine
+    container_name: kirogate-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-8000}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      kirogate:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  redis_data:
+  kirogate_data:

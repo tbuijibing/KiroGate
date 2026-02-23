@@ -23,12 +23,13 @@ KiroGate - OpenAI & Anthropic 兼容的 Kiro API 网关。
 应用程序入口点。创建 FastAPI 应用并连接路由。
 
 用法:
-    uvicorn main:app --host 0.0.0.0 --port 8000
+    uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
     或直接运行:
     python main.py
 """
 
 import logging
+import os
 import sys
 import asyncio
 from contextlib import asynccontextmanager
@@ -52,6 +53,16 @@ from kiro_gateway.routes import router, limiter, rate_limit_handler
 from kiro_gateway.exceptions import validation_exception_handler
 from kiro_gateway.middleware import RequestTrackingMiddleware, MetricsMiddleware, SiteGuardMiddleware
 from kiro_gateway.http_client import close_global_http_client
+
+
+# --- Windows 控制台 UTF-8 编码修复 ---
+if sys.platform == "win32":
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
 
 
 # --- Loguru 配置 ---
@@ -228,12 +239,27 @@ async def lifespan(app: FastAPI):
     """
     管理应用程序生命周期。
 
-    创建并初始化：
-    - KiroAuthManager 用于 token 管理（简单模式）
-    - ModelInfoCache 用于模型缓存
-    - 启动后台任务
+    启动顺序：
+    1. 数据库连接池
+    2. Redis 连接池
+    3. 指标系统
+    4. 认证缓存
+    5. Token 分配器
+    6. 健康检查器
+    7. 配置热重载订阅
+    8. 节点心跳上报
+
+    关闭顺序（反序）：
+    1. 节点心跳
+    2. 配置订阅
+    3. 健康检查器（释放领导者锁）
+    4. Token 分配器
+    5. 认证缓存
+    6. 指标系统（刷新待写入数据）
+    7. Redis 连接池
+    8. 数据库连接池
     """
-    logger.info("Starting application... Creating state managers.")
+    logger.info("Starting application... Initializing components.")
 
     # 确保 debug_logs 目录存在
     debug_dir = Path(settings.debug_dir)
@@ -241,6 +267,54 @@ async def lifespan(app: FastAPI):
 
     # 检查是否配置了全局凭证
     has_global_credentials = bool(settings.refresh_token) or bool(settings.kiro_creds_file)
+
+    # ==================== 启动顺序 ====================
+
+    # 设置应用状态标志
+    app.state.is_shutting_down = False
+
+    # 1. 数据库连接池初始化
+    from kiro_gateway.database import db
+    await db.initialize()
+    logger.info("✓ 数据库连接池已初始化")
+
+    # 2. Redis 连接池初始化
+    if settings.is_distributed:
+        from kiro_gateway.redis_manager import redis_manager
+        await redis_manager.initialize(settings.redis_url, settings.redis_max_connections)
+        logger.info("✓ Redis 连接池已初始化")
+
+    # 3. 指标系统初始化
+    from kiro_gateway.metrics import metrics
+    await metrics.initialize()
+    logger.info("✓ 指标系统已初始化")
+
+    # 4. 认证缓存初始化（无需显式初始化，使用时自动创建）
+    logger.info("✓ 认证缓存已就绪")
+
+    # 5. Token 分配器初始化
+    from kiro_gateway.token_allocator import token_allocator
+    await token_allocator.initialize()
+    logger.info("✓ Token 分配器已初始化")
+
+    # 6. 健康检查器启动
+    from kiro_gateway.health_checker import health_checker
+    await health_checker.start()
+    logger.info("✓ 健康检查器已启动")
+
+    # 7. 配置热重载订阅（分布式模式）
+    if settings.is_distributed:
+        from kiro_gateway.config_reloader import config_reloader
+        await config_reloader.start()
+        logger.info("✓ 配置热重载订阅已启动")
+
+    # 8. 节点心跳上报（分布式模式）
+    if settings.is_distributed:
+        from kiro_gateway.heartbeat import node_heartbeat
+        await node_heartbeat.start()
+        logger.info("✓ 节点心跳上报已启动")
+
+    # ==================== 旧版兼容：模型缓存 ====================
 
     # 创建全局 AuthManager（简单模式使用）
     auth_manager = KiroAuthManager(
@@ -269,21 +343,75 @@ async def lifespan(app: FastAPI):
         logger.warning("No global credentials configured - model cache refresh disabled")
         logger.warning("Simple mode authentication will not work, only multi-tenant mode available")
 
+    # ==================== 启动日志 ====================
+
+    deployment_mode = "分布式模式" if settings.is_distributed else "单节点模式"
+    logger.info("=" * 60)
+    logger.info(f"部署模式: {deployment_mode}")
+    if settings.is_distributed:
+        logger.info(f"PostgreSQL: {settings.database_url}")
+        logger.info(f"Redis: {settings.redis_url}")
+        logger.info(f"Node ID: {settings.node_id}")
+    else:
+        logger.info(f"SQLite: {settings.database_url}")
+    logger.info("=" * 60)
+
     logger.info("Application startup complete.")
 
     # 显示启动 banner
     _print_startup_banner()
 
-    # Start token health checker (for user token pool)
-    from kiro_gateway.health_checker import health_checker
-    await health_checker.start()
-
     yield
+
+    # ==================== 关闭顺序（反序）====================
 
     logger.info("Shutting down application...")
 
-    # Stop health checker
+    # 设置关闭标志，/health 端点将返回 503
+    app.state.is_shutting_down = True
+
+    # 1. 节点心跳停止
+    if settings.is_distributed:
+        from kiro_gateway.heartbeat import node_heartbeat
+        await node_heartbeat.stop()
+        logger.info("✓ 节点心跳已停止")
+
+    # 2. 配置订阅停止
+    if settings.is_distributed:
+        from kiro_gateway.config_reloader import config_reloader
+        await config_reloader.stop()
+        logger.info("✓ 配置热重载订阅已停止")
+
+    # 3. 健康检查器停止（释放领导者锁）
+    from kiro_gateway.health_checker import health_checker
     await health_checker.stop()
+    logger.info("✓ 健康检查器已停止")
+
+    # 4. Token 分配器关闭
+    from kiro_gateway.token_allocator import token_allocator
+    await token_allocator.shutdown()
+    logger.info("✓ Token 分配器已关闭")
+
+    # 5. 认证缓存关闭（无需显式关闭）
+    logger.info("✓ 认证缓存已清理")
+
+    # 6. 指标系统刷新待写入数据
+    from kiro_gateway.metrics import metrics
+    await metrics.flush()
+    logger.info("✓ 指标系统已刷新")
+
+    # 7. Redis 连接池关闭
+    if settings.is_distributed:
+        from kiro_gateway.redis_manager import redis_manager
+        await redis_manager.close()
+        logger.info("✓ Redis 连接池已关闭")
+
+    # 8. 数据库连接池关闭
+    from kiro_gateway.database import db
+    await db.close()
+    logger.info("✓ 数据库连接池已关闭")
+
+    # ==================== 旧版兼容：模型缓存 ====================
 
     # 停止后台任务
     if has_global_credentials:
@@ -360,4 +488,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         log_config=UVICORN_LOG_CONFIG,
+        timeout_graceful_shutdown=30,  # 优雅关闭超时 30 秒
     )

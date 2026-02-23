@@ -25,6 +25,7 @@ KiroGate 配置模块。
 """
 
 import re
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -308,6 +309,65 @@ class Settings(BaseSettings):
     static_assets_proxy_enabled: bool = Field(default=True, alias="STATIC_ASSETS_PROXY_ENABLED")
     static_assets_proxy_base: str = Field(default="https://proxy.jhun.edu.kg", alias="STATIC_ASSETS_PROXY_BASE")
 
+    # ==================================================================================================
+    # 分布式部署配置
+    # ==================================================================================================
+
+    # 数据库连接 URL
+    database_url: str = Field(default="sqlite:///data/kirogate.db", alias="DATABASE_URL")
+
+    # PostgreSQL 连接池大小
+    db_pool_size: int = Field(default=20, alias="DB_POOL_SIZE")
+
+    # PostgreSQL 连接池最大溢出连接数
+    db_max_overflow: int = Field(default=10, alias="DB_MAX_OVERFLOW")
+
+    # Redis 连接 URL
+    redis_url: str = Field(default="", alias="REDIS_URL")
+
+    # Redis 最大连接数
+    redis_max_connections: int = Field(default=50, alias="REDIS_MAX_CONNECTIONS")
+
+    # 节点标识
+    node_id: str = Field(default="", alias="NODE_ID")
+
+    # ==================================================================================================
+    # Token 防风控配置
+    # ==================================================================================================
+
+    # 单 Token 每分钟最大请求数
+    token_rpm_limit: int = Field(default=10, alias="TOKEN_RPM_LIMIT")
+
+    # 单 Token 每小时最大请求数
+    token_rph_limit: int = Field(default=200, alias="TOKEN_RPH_LIMIT")
+
+    # 单 Token 最大并发请求数
+    token_max_concurrent: int = Field(default=2, alias="TOKEN_MAX_CONCURRENT")
+
+    # 同一 Token 连续使用最大次数
+    token_max_consecutive_uses: int = Field(default=5, alias="TOKEN_MAX_CONSECUTIVE_USES")
+
+    # ==================================================================================================
+    # 用户配额配置
+    # ==================================================================================================
+
+    # 用户默认每日请求配额
+    default_user_daily_quota: int = Field(default=500, alias="DEFAULT_USER_DAILY_QUOTA")
+
+    # 用户默认每月请求配额
+    default_user_monthly_quota: int = Field(default=10000, alias="DEFAULT_USER_MONTHLY_QUOTA")
+
+    # 单个 API Key 默认每分钟请求限制
+    default_key_rpm_limit: int = Field(default=30, alias="DEFAULT_KEY_RPM_LIMIT")
+
+    @property
+    def is_distributed(self) -> bool:
+        """判断是否为分布式部署模式。"""
+        return (
+            self.database_url.startswith("postgresql")
+            and bool(self.redis_url)
+        )
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -399,6 +459,20 @@ class Settings(BaseSettings):
             logger.critical(error_msg)
             raise ValueError(error_msg)
 
+        # 分布式模式安全检查
+        if self.database_url.startswith("postgresql") and bool(self.redis_url) and critical_issues:
+            error_msg = (
+                f"安全错误: 分布式模式中禁止使用默认密钥！\n"
+                f"请设置以下环境变量: {', '.join(critical_issues)}\n"
+                f"示例: docker run -e USER_SESSION_SECRET=\"$(openssl rand -hex 32)\" ..."
+            )
+            logger.critical(error_msg)
+            raise ValueError(error_msg)
+
+        # 自动生成 node_id
+        if not self.node_id:
+            self.node_id = str(uuid.uuid4())[:8]
+
         return self
 
 
@@ -454,6 +528,11 @@ TOKEN_HEALTH_CHECK_INTERVAL: int = settings.token_health_check_interval
 TOKEN_MIN_SUCCESS_RATE: float = settings.token_min_success_rate
 STATIC_ASSETS_PROXY_ENABLED: bool = settings.static_assets_proxy_enabled
 STATIC_ASSETS_PROXY_BASE: str = settings.static_assets_proxy_base
+
+# Distributed deployment
+DATABASE_URL: str = settings.database_url
+REDIS_URL: str = settings.redis_url
+NODE_ID: str = settings.node_id
 
 # OAuth2 LinuxDo endpoints
 OAUTH_AUTHORIZATION_URL: str = "https://connect.linux.do/oauth2/authorize"
