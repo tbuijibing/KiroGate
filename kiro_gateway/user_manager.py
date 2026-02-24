@@ -322,10 +322,10 @@ class UserManager:
             return None, "用户信息无效：缺少 ID"
 
         # Check if user exists
-        user = user_db.get_user_by_linuxdo(linuxdo_id)
+        user = await user_db.get_user_by_linuxdo(linuxdo_id)
         if user:
             # Update last login
-            user_db.update_last_login(user.id)
+            await user_db.update_last_login(user.id)
             # Check if banned
             if user.is_banned:
                 return None, "用户已被封禁"
@@ -333,10 +333,10 @@ class UserManager:
                 return None, "账号审核中" if user.approval_status == "pending" else "账号已被拒绝"
         else:
             from kiro_gateway.metrics import metrics
-            if metrics.is_self_use_enabled():
+            if await metrics.is_self_use_enabled():
                 return None, "自用模式下暂不开放注册"
             # Create new user
-            user = user_db.create_user(
+            user = await user_db.create_user(
                 linuxdo_id=linuxdo_id,
                 username=username,
                 avatar_url=avatar_url,
@@ -382,10 +382,10 @@ class UserManager:
             return None, "用户信息无效：缺少 ID"
 
         # Check if user exists by GitHub ID
-        user = user_db.get_user_by_github(github_id)
+        user = await user_db.get_user_by_github(github_id)
         if user:
             # Update last login
-            user_db.update_last_login(user.id)
+            await user_db.update_last_login(user.id)
             # Check if banned
             if user.is_banned:
                 return None, "用户已被封禁"
@@ -393,10 +393,10 @@ class UserManager:
                 return None, "账号审核中" if user.approval_status == "pending" else "账号已被拒绝"
         else:
             from kiro_gateway.metrics import metrics
-            if metrics.is_self_use_enabled():
+            if await metrics.is_self_use_enabled():
                 return None, "自用模式下暂不开放注册"
             # Create new user with GitHub ID
-            user = user_db.create_user(
+            user = await user_db.create_user(
                 github_id=github_id,
                 username=username,
                 avatar_url=avatar_url,
@@ -419,7 +419,7 @@ class UserManager:
             return None
         return user
 
-    def register_with_email(
+    async def register_with_email(
         self,
         email: str,
         password: str,
@@ -432,15 +432,15 @@ class UserManager:
         if not password or len(password) < 8:
             return None, "密码至少 8 位"
         from kiro_gateway.metrics import metrics
-        if metrics.is_self_use_enabled():
+        if await metrics.is_self_use_enabled():
             return None, "自用模式下暂不开放注册"
-        existing = user_db.get_user_by_email(email)
+        existing = await user_db.get_user_by_email(email)
         if existing:
             return None, "邮箱已注册"
         display_name = (username or "").strip() or email.split("@", 1)[0]
         approval_status = "pending" if metrics.is_require_approval() else "approved"
         password_hash = self._hash_password(password)
-        user = user_db.create_user(
+        user = await user_db.create_user(
             username=display_name,
             email=email,
             password_hash=password_hash,
@@ -451,12 +451,12 @@ class UserManager:
         session_token = self.session.create_session(user.id, user.session_version)
         return user, session_token
 
-    def login_with_email(self, email: str, password: str) -> Tuple[Optional[User], Optional[str]]:
+    async def login_with_email(self, email: str, password: str) -> Tuple[Optional[User], Optional[str]]:
         """Login with email/password."""
         email = (email or "").strip().lower()
         if not email or not password:
             return None, "邮箱或密码不能为空"
-        user = user_db.get_user_by_email(email)
+        user = await user_db.get_user_by_email(email)
         if not user or not user.password_hash:
             return None, "邮箱或密码错误"
         if not self._verify_password(password, user.password_hash):
@@ -465,7 +465,7 @@ class UserManager:
             return None, "用户已被封禁"
         if user.approval_status != "approved":
             return None, "账号审核中" if user.approval_status == "pending" else "账号已被拒绝"
-        user_db.update_last_login(user.id)
+        await user_db.update_last_login(user.id)
         session_token = self.session.create_session(user.id, user.session_version)
         return user, session_token
 

@@ -176,10 +176,10 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         model = "unknown"
 
         # Record client IP
-        metrics.record_ip(get_client_ip(request))
+        await metrics.record_ip(get_client_ip(request))
 
         # Increment active connections
-        metrics.inc_active_connections()
+        await metrics.inc_active_connections()
 
         try:
             response = await call_next(request)
@@ -192,8 +192,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 model = request.state.model
 
             # Record metrics
-            metrics.inc_request(endpoint, response.status_code, model)
-            metrics.observe_latency(endpoint, process_time)
+            await metrics.inc_request(endpoint, response.status_code, model)
+            await metrics.observe_latency(endpoint, process_time)
 
             # Track API key and token usage for sk-xxx keys
             is_success = 200 <= response.status_code < 400
@@ -203,9 +203,9 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             process_time = time.time() - start_time
-            metrics.inc_request(endpoint, 500, model)
-            metrics.inc_error(type(e).__name__)
-            metrics.observe_latency(endpoint, process_time)
+            await metrics.inc_request(endpoint, 500, model)
+            await metrics.inc_error(type(e).__name__)
+            await metrics.observe_latency(endpoint, process_time)
 
             # Track failed request
             await self._track_token_usage(request, success=False)
@@ -213,7 +213,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
         finally:
             # Decrement active connections
-            metrics.dec_active_connections()
+            await metrics.dec_active_connections()
 
     async def _track_token_usage(self, request: Request, success: bool) -> None:
         """Track usage for sk-xxx API keys."""
@@ -309,7 +309,7 @@ class SiteGuardMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Check site status
-        if not metrics.is_site_enabled():
+        if not await metrics.is_site_enabled():
             # Check if API request
             accept = request.headers.get("accept", "")
             is_api = (
@@ -330,7 +330,7 @@ class SiteGuardMiddleware(BaseHTTPMiddleware):
 
         # Check IP blacklist
         client_ip = get_client_ip(request)
-        if metrics.is_ip_banned(client_ip):
+        if await metrics.is_ip_banned(client_ip):
             return JSONResponse(
                 status_code=403,
                 content={"error": "访问被拒绝"}

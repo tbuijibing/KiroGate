@@ -4643,7 +4643,7 @@ def render_user_page(user) -> str:
     """Render the user dashboard page."""
     from kiro_gateway.metrics import metrics
 
-    self_use_enabled = metrics.is_self_use_enabled()
+    self_use_enabled = metrics._self_use_enabled
     body_self_use_attr = "true" if self_use_enabled else "false"
 
     display_name_raw = user.username or "用户"
@@ -6837,7 +6837,7 @@ def render_tokens_page(user=None) -> str:
     """Render the public token pool page."""
     from kiro_gateway.metrics import metrics
 
-    self_use_enabled = metrics.is_self_use_enabled()
+    self_use_enabled = metrics._self_use_enabled
     body_self_use_attr = "true" if self_use_enabled else "false"
     login_section = '<a href="/user" class="btn-primary">用户中心</a>' if user else '<a href="/login" class="btn-primary">登录添加</a>'
     return f'''<!DOCTYPE html>
@@ -7000,7 +7000,7 @@ def render_login_page(
     from kiro_gateway.metrics import metrics
     from kiro_gateway.config import OAUTH_CLIENT_ID, GITHUB_CLIENT_ID
 
-    self_use_enabled = metrics.is_self_use_enabled()
+    self_use_enabled = metrics._self_use_enabled
     body_self_use_attr = "true" if self_use_enabled else "false"
     safe_error = html.escape(error) if error else ""
     safe_info = html.escape(info) if info else ""
@@ -7262,9 +7262,9 @@ def render_register_page(
     from kiro_gateway.metrics import metrics
     from kiro_gateway.config import OAUTH_CLIENT_ID, GITHUB_CLIENT_ID
 
-    self_use_enabled = metrics.is_self_use_enabled()
+    self_use_enabled = metrics._self_use_enabled
     body_self_use_attr = "true" if self_use_enabled else "false"
-    require_approval = metrics.is_require_approval()
+    require_approval = metrics._require_approval
     safe_error = html.escape(error) if error else ""
     safe_info = html.escape(info) if info else ""
     safe_email = html.escape(email or "")

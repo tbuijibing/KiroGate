@@ -274,8 +274,8 @@ async def lifespan(app: FastAPI):
     app.state.is_shutting_down = False
 
     # 1. 数据库连接池初始化
-    from kiro_gateway.database import db
-    await db.initialize()
+    from kiro_gateway.database import user_db
+    await user_db.initialize()
     logger.info("✓ 数据库连接池已初始化")
 
     # 2. Redis 连接池初始化
@@ -407,8 +407,8 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Redis 连接池已关闭")
 
     # 8. 数据库连接池关闭
-    from kiro_gateway.database import db
-    await db.close()
+    from kiro_gateway.database import user_db
+    await user_db.close()
     logger.info("✓ 数据库连接池已关闭")
 
     # ==================== 旧版兼容：模型缓存 ====================

@@ -1,4 +1,4 @@
-﻿﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 # KiroGate
 # Based on kiro-openai-gateway by Jwadow (https://github.com/Jwadow/kiro-openai-gateway)
@@ -171,7 +171,7 @@ def _get_import_key_from_request(request: Request) -> str | None:
 def _get_proxy_api_key(request: Request | None = None) -> str:
     try:
         from kiro_gateway.metrics import metrics
-        proxy_key = metrics.get_proxy_api_key()
+        proxy_key = metrics._proxy_api_key
         if proxy_key:
             return proxy_key
     except Exception:
@@ -286,7 +286,7 @@ async def _parse_auth_header(auth_header: str, request: Request = None) -> tuple
         from kiro_gateway.database import user_db
         from kiro_gateway.token_allocator import token_allocator, NoTokenAvailable
 
-        result = user_db.verify_api_key(token)
+        result = await user_db.verify_api_key(token)
         if not result:
             logger.warning(f"[{get_timestamp()}] 用户 API Key 无效: {_mask_token(token)}")
             raise HTTPException(status_code=401, detail="API Key 无效或缺失")
@@ -294,7 +294,7 @@ async def _parse_auth_header(auth_header: str, request: Request = None) -> tuple
         user_id, api_key = result
 
         # Check if user is banned
-        user = user_db.get_user(user_id)
+        user = await user_db.get_user(user_id)
         if not user or user.is_banned:
             logger.warning(f"[{get_timestamp()}] 被封禁用户尝试使用 API Key: 用户ID={user_id}")
             raise HTTPException(status_code=403, detail="用户已被封禁")
@@ -451,7 +451,7 @@ async def verify_anthropic_api_key(
             from kiro_gateway.database import user_db
             from kiro_gateway.token_allocator import token_allocator, NoTokenAvailable
 
-            result = user_db.verify_api_key(x_api_key)
+            result = await user_db.verify_api_key(x_api_key)
             if not result:
                 logger.warning(f"[{get_timestamp()}] x-api-key 中的用户 API Key 无效: {_mask_token(x_api_key)}")
                 raise HTTPException(status_code=401, detail="API Key 无效或缺失")
@@ -459,7 +459,7 @@ async def verify_anthropic_api_key(
             user_id, api_key = result
 
             # Check if user is banned
-            user = user_db.get_user(user_id)
+            user = await user_db.get_user(user_id)
             if not user or user.is_banned:
                 logger.warning(f"[{get_timestamp()}] 被封禁用户尝试使用 API Key: 用户ID={user_id}")
                 raise HTTPException(status_code=403, detail="用户已被封禁")
@@ -679,8 +679,8 @@ async def health(request: Request):
         token_valid = False
 
     # Update metrics
-    metrics.set_cache_size(model_cache.size)
-    metrics.set_token_valid(token_valid)
+    await metrics.set_cache_size(model_cache.size)
+    await metrics.set_token_valid(token_valid)
 
     # Calculate uptime
     uptime = int(metrics._start_time and (datetime.now(timezone.utc).timestamp() - metrics._start_time) or 0)
@@ -744,8 +744,8 @@ async def get_site_mode():
     """Get current site mode (normal/self-use/maintenance)."""
     from kiro_gateway.metrics import metrics
 
-    site_enabled = metrics.is_site_enabled()
-    self_use_enabled = metrics.is_self_use_enabled()
+    site_enabled = await metrics.is_site_enabled()
+    self_use_enabled = await metrics.is_self_use_enabled()
 
     if not site_enabled:
         mode = "maintenance"
@@ -1454,7 +1454,7 @@ async def admin_get_stats(request: Request):
         return JSONResponse(status_code=401, content={"error": "未授权"})
     from kiro_gateway.metrics import metrics
 
-    stats = metrics.get_admin_stats()
+    stats = await metrics.get_admin_stats()
     # Add cached tokens count
     stats["cached_tokens"] = auth_cache.size
     # Map snake_case for frontend
@@ -1590,7 +1590,7 @@ async def admin_toggle_site(
     if not verify_admin_session(session):
         return JSONResponse(status_code=401, content={"error": "未授权"})
     from kiro_gateway.metrics import metrics
-    success = metrics.set_site_enabled(enabled)
+    success = await metrics.set_site_enabled(enabled)
     return {"success": success, "enabled": enabled}
 
 
@@ -1605,7 +1605,7 @@ async def admin_toggle_self_use(
     if not verify_admin_session(session):
         return JSONResponse(status_code=401, content={"error": "未授权"})
     from kiro_gateway.metrics import metrics
-    success = metrics.set_self_use_enabled(enabled)
+    success = await metrics.set_self_use_enabled(enabled)
     return {"success": success, "enabled": enabled}
 
 
@@ -1620,7 +1620,7 @@ async def admin_toggle_approval(
     if not verify_admin_session(session):
         return JSONResponse(status_code=401, content={"error": "未授权"})
     from kiro_gateway.metrics import metrics
-    success = metrics.set_require_approval(enabled)
+    success = await metrics.set_require_approval(enabled)
     return {"success": success, "enabled": enabled}
 
 @router.get("/admin/api/proxy-key", include_in_schema=False)
@@ -1630,7 +1630,7 @@ async def admin_get_proxy_key(request: Request):
     if not verify_admin_session(session):
         return JSONResponse(status_code=401, content={"error": "未授权"})
     from kiro_gateway.metrics import metrics
-    return {"proxy_api_key": metrics.get_proxy_api_key()}
+    return {"proxy_api_key": await metrics.get_proxy_api_key()}
 
 
 @router.post("/admin/api/proxy-key", include_in_schema=False)
@@ -1647,7 +1647,7 @@ async def admin_set_proxy_key(
     if not proxy_api_key:
         return JSONResponse(status_code=400, content={"error": "API Key 不能为空"})
     from kiro_gateway.metrics import metrics
-    success = metrics.set_proxy_api_key(proxy_api_key)
+    success = await metrics.set_proxy_api_key(proxy_api_key)
     if not success:
         return JSONResponse(status_code=500, content={"error": "更新失败"})
     return {"success": True}
@@ -1665,7 +1665,7 @@ async def admin_refresh_token(
     try:
         auth_manager = getattr(request.app.state, "auth_manager", None)
         if auth_manager:
-            await auth_manager.force_refresh(force=True)  # 管理员手动刷新，跳过防抖
+            await auth_manager.force_refresh()  # 管理员手动刷新
             return {"success": True, "message": "Token 刷新成功"}
         return {"success": False, "message": "认证管理器不可用"}
     except Exception as e:
@@ -2110,13 +2110,13 @@ async def admin_create_import_key(
         return JSONResponse(status_code=401, content={"error": "未授权"})
 
     from kiro_gateway.database import user_db
-    user = user_db.get_user(user_id)
+    user = await user_db.get_user(user_id)
     if not user:
         return JSONResponse(status_code=404, content={"error": "用户不存在"})
     if user.is_banned:
         return JSONResponse(status_code=403, content={"error": "用户已被封禁"})
 
-    plain_key, import_key = user_db.generate_import_key(user_id, name or None)
+    plain_key, import_key = await user_db.generate_import_key(user_id, name or None)
     return {
         "success": True,
         "key": plain_key,
@@ -2138,7 +2138,7 @@ async def admin_delete_import_key(
         return JSONResponse(status_code=401, content={"error": "未授权"})
 
     from kiro_gateway.database import user_db
-    success = user_db.delete_import_key(key_id)
+    success = await user_db.delete_import_key(key_id)
     return {"success": success}
 
 
@@ -2179,7 +2179,7 @@ async def admin_get_users(
     from kiro_gateway.database import user_db
     search = search.strip()
     offset = (page - 1) * page_size
-    users = user_db.get_all_users(
+    users = await user_db.get_all_users(
         limit=page_size,
         offset=offset,
         search=search,
@@ -2190,7 +2190,7 @@ async def admin_get_users(
         sort_field=sort_field,
         sort_order=sort_order
     )
-    total = user_db.get_user_count(
+    total = await user_db.get_user_count(
         search=search,
         is_admin=is_admin,
         is_banned=is_banned,
@@ -2198,7 +2198,7 @@ async def admin_get_users(
         trust_level=trust_level
     )
 
-    def _serialize_user(user):
+    async def _serialize_user(user):
         payload = {
             "id": user.id,
             "linuxdo_id": user.linuxdo_id,
@@ -2212,13 +2212,13 @@ async def admin_get_users(
             "approval_status": user.approval_status,
             "created_at": user.created_at,
             "last_login": user.last_login,
-            "token_count": user_db.get_token_count(user.id)["total"],
-            "api_key_count": user_db.get_api_key_count(user.id),
+            "token_count": (await user_db.get_token_count(user.id))["total"],
+            "api_key_count": await user_db.get_api_key_count(user.id),
         }
         if include_details:
             limit = details_limit if details_limit and details_limit > 0 else None
-            tokens = user_db.get_user_tokens(user.id, limit=limit, offset=0)
-            keys = user_db.get_user_api_keys(user.id, limit=limit, offset=0)
+            tokens = await user_db.get_user_tokens(user.id, limit=limit, offset=0)
+            keys = await user_db.get_user_api_keys(user.id, limit=limit, offset=0)
             payload["tokens"] = [
                 {
                     "id": t.id,
@@ -2248,8 +2248,9 @@ async def admin_get_users(
             ]
         return payload
 
+    serialized_users = await asyncio.gather(*[_serialize_user(u) for u in users])
     return {
-        "users": [_serialize_user(u) for u in users],
+        "users": list(serialized_users),
         "pagination": {"page": page, "page_size": page_size, "total": total}
     }
 
@@ -2266,7 +2267,7 @@ async def admin_ban_user(
         return JSONResponse(status_code=401, content={"error": "未授权"})
 
     from kiro_gateway.database import user_db
-    success = user_db.set_user_banned(user_id, True)
+    success = await user_db.set_user_banned(user_id, True)
     return {"success": success}
 
 
@@ -2282,7 +2283,7 @@ async def admin_unban_user(
         return JSONResponse(status_code=401, content={"error": "未授权"})
 
     from kiro_gateway.database import user_db
-    success = user_db.set_user_banned(user_id, False)
+    success = await user_db.set_user_banned(user_id, False)
     return {"success": success}
 
 
@@ -2297,7 +2298,7 @@ async def admin_approve_user(
     if not verify_admin_session(session):
         return JSONResponse(status_code=401, content={"error": "未授权"})
     from kiro_gateway.database import user_db
-    user_db.set_user_approval_status(user_id, "approved")
+    await user_db.set_user_approval_status(user_id, "approved")
     return {"success": True}
 
 
@@ -2312,7 +2313,7 @@ async def admin_reject_user(
     if not verify_admin_session(session):
         return JSONResponse(status_code=401, content={"error": "未授权"})
     from kiro_gateway.database import user_db
-    user_db.set_user_approval_status(user_id, "rejected")
+    await user_db.set_user_approval_status(user_id, "rejected")
     return {"success": True}
 
 
@@ -2335,7 +2336,7 @@ async def admin_get_donated_tokens(
 
     from kiro_gateway.database import user_db
     offset = (page - 1) * page_size
-    tokens = user_db.get_all_tokens_with_users(
+    tokens = await user_db.get_all_tokens_with_users(
         limit=page_size,
         offset=offset,
         search=search,
@@ -2345,14 +2346,14 @@ async def admin_get_donated_tokens(
         sort_field=sort_field,
         sort_order=sort_order
     )
-    total_filtered = user_db.get_tokens_count(
+    total_filtered = await user_db.get_tokens_count(
         search=search,
         visibility=visibility,
         status=status,
         user_id=user_id
     )
-    token_counts = user_db.get_token_count()
-    avg_success = user_db.get_tokens_success_rate_avg()
+    token_counts = await user_db.get_token_count()
+    avg_success = await user_db.get_tokens_success_rate_avg()
 
     return {
         "total": token_counts["total"],
@@ -2377,11 +2378,11 @@ async def admin_toggle_token_visibility(
         return JSONResponse(status_code=401, content={"error": "未授权"})
 
     from kiro_gateway.metrics import metrics
-    if metrics.is_self_use_enabled() and visibility == "public":
+    if await metrics.is_self_use_enabled() and visibility == "public":
         return JSONResponse(status_code=403, content={"error": "自用模式下禁止公开 Token"})
 
     from kiro_gateway.database import user_db
-    success = user_db.set_token_visibility(token_id, visibility)
+    success = await user_db.set_token_visibility(token_id, visibility)
     return {"success": success}
 
 
@@ -2397,7 +2398,7 @@ async def admin_delete_donated_token(
         return JSONResponse(status_code=401, content={"error": "未授权"})
 
     from kiro_gateway.database import user_db
-    success = user_db.admin_delete_token(token_id)
+    success = await user_db.admin_delete_token(token_id)
     return {"success": success}
 
 
@@ -2409,8 +2410,8 @@ async def admin_get_announcement(request: Request):
         return JSONResponse(status_code=401, content={"error": "未授权"})
 
     from kiro_gateway.database import user_db
-    latest = user_db.get_latest_announcement()
-    active = user_db.get_active_announcement()
+    latest = await user_db.get_latest_announcement()
+    active = await user_db.get_active_announcement()
     return {
         "announcement": latest,
         "is_active": bool(active),
@@ -2439,13 +2440,13 @@ async def admin_update_announcement(
     if active:
         if not content:
             return JSONResponse(status_code=400, content={"error": "公告内容不能为空"})
-        user_db.deactivate_announcements()
-        announcement_id = user_db.create_announcement(content, True, allow_guest_flag)
+        await user_db.deactivate_announcements()
+        announcement_id = await user_db.create_announcement(content, True, allow_guest_flag)
         return {"success": True, "id": announcement_id}
 
-    user_db.deactivate_announcements()
+    await user_db.deactivate_announcements()
     if content:
-        announcement_id = user_db.create_announcement(content, False, allow_guest_flag)
+        announcement_id = await user_db.create_announcement(content, False, allow_guest_flag)
         return {"success": True, "id": announcement_id, "active": False}
     return {"success": True, "active": False}
 
@@ -2687,9 +2688,9 @@ async def user_get_profile(request: Request):
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.database import user_db
     from kiro_gateway.metrics import metrics
-    token_counts = user_db.get_token_count(user.id)
-    api_key_count = user_db.get_api_key_count(user.id)
-    public_token_count = 0 if metrics.is_self_use_enabled() else token_counts["public"]
+    token_counts = await user_db.get_token_count(user.id)
+    api_key_count = await user_db.get_api_key_count(user.id)
+    public_token_count = 0 if await metrics.is_self_use_enabled() else token_counts["public"]
     return {
         "id": user.id,
         "username": user.username,
@@ -2706,7 +2707,7 @@ async def user_get_profile(request: Request):
 async def user_get_announcement(request: Request):
     """Get active announcement for current user."""
     from kiro_gateway.database import user_db
-    announcement = user_db.get_active_announcement()
+    announcement = await user_db.get_active_announcement()
     if not announcement:
         return {"active": False}
     user = await get_current_user(request)
@@ -2724,7 +2725,7 @@ async def user_get_announcement(request: Request):
             "can_mark": False,
             "viewer": "guest",
         }
-    status = user_db.get_announcement_status(user.id, announcement["id"])
+    status = await user_db.get_announcement_status(user.id, announcement["id"])
     if status.get("is_read") or status.get("is_dismissed"):
         return {"active": False}
     return {
@@ -2750,10 +2751,10 @@ async def user_mark_announcement_read(
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.database import user_db
-    active = user_db.get_active_announcement()
+    active = await user_db.get_active_announcement()
     if not active or active["id"] != announcement_id:
         return JSONResponse(status_code=400, content={"error": "公告已更新，请刷新后再试"})
-    user_db.mark_announcement_read(user.id, announcement_id)
+    await user_db.mark_announcement_read(user.id, announcement_id)
     return {"success": True}
 
 
@@ -2768,10 +2769,10 @@ async def user_mark_announcement_dismissed(
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.database import user_db
-    active = user_db.get_active_announcement()
+    active = await user_db.get_active_announcement()
     if not active or active["id"] != announcement_id:
         return JSONResponse(status_code=400, content={"error": "公告已更新，请刷新后再试"})
-    user_db.mark_announcement_dismissed(user.id, announcement_id)
+    await user_db.mark_announcement_dismissed(user.id, announcement_id)
     return {"success": True}
 
 @router.get("/user/api/tokens", include_in_schema=False)
@@ -2792,7 +2793,7 @@ async def user_get_tokens(
     from kiro_gateway.database import user_db
     search = search.strip()
     offset = (page - 1) * page_size
-    tokens = user_db.get_user_tokens(
+    tokens = await user_db.get_user_tokens(
         user.id,
         limit=page_size,
         offset=offset,
@@ -2802,7 +2803,7 @@ async def user_get_tokens(
         sort_field=sort_field,
         sort_order=sort_order
     )
-    total = user_db.get_user_tokens_count(
+    total = await user_db.get_user_tokens_count(
         user.id,
         search=search,
         status=status,
@@ -2839,10 +2840,10 @@ async def user_get_public_tokens(request: Request):
     if not user:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     from kiro_gateway.metrics import metrics
-    if metrics.is_self_use_enabled():
+    if await metrics.is_self_use_enabled():
         return JSONResponse(status_code=403, content={"error": "自用模式下不开放公开 Token 池"})
     from kiro_gateway.database import user_db
-    tokens = user_db.get_public_tokens_with_users()
+    tokens = await user_db.get_public_tokens_with_users()
     avg_rate = sum(t["success_rate"] for t in tokens) / len(tokens) if tokens else 0
     return {
         "tokens": [
@@ -3131,7 +3132,7 @@ async def _process_import_payload(
     pending_credentials: list[TokenCredential] = []
     skipped = 0
     for cred in credentials:
-        if user_db.token_exists(cred.refresh_token):
+        if await user_db.token_exists(cred.refresh_token):
             skipped += 1
         else:
             pending_credentials.append(cred)
@@ -3171,7 +3172,7 @@ async def _process_import_payload(
                 error_samples.append(f"{_mask_token(cred.refresh_token)}: {error}")
             continue
 
-        success, message = user_db.donate_token(
+        success, message = await user_db.donate_token(
             user_id=user_id,
             refresh_token=cred.refresh_token,
             visibility=visibility,
@@ -3233,7 +3234,7 @@ async def user_donate_token(
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
     from kiro_gateway.metrics import metrics
-    if metrics.is_self_use_enabled() and visibility == "public":
+    if await metrics.is_self_use_enabled() and visibility == "public":
         return JSONResponse(status_code=403, content={"error": "自用模式下禁止公开 Token"})
 
     if visibility not in ("public", "private"):
@@ -3268,7 +3269,7 @@ async def user_donate_token(
         return {"success": False, "message": f"Token 验证失败：{str(e)}"}
 
     # Save token
-    success, message = user_db.donate_token(
+    success, message = await user_db.donate_token(
         user_id=user.id,
         refresh_token=refresh_token,
         visibility=visibility,
@@ -3299,7 +3300,7 @@ async def user_import_tokens(
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
     from kiro_gateway.metrics import metrics
-    if metrics.is_self_use_enabled() and visibility == "public":
+    if await metrics.is_self_use_enabled() and visibility == "public":
         return JSONResponse(status_code=403, content={"error": "自用模式下禁止公开 Token"})
 
     if visibility not in ("public", "private"):
@@ -3345,19 +3346,19 @@ async def api_import_tokens(
         return JSONResponse(status_code=401, content={"error": "Import Key 缺失"})
 
     from kiro_gateway.database import user_db
-    result = user_db.verify_import_key(import_key)
+    result = await user_db.verify_import_key(import_key)
     if not result:
         return JSONResponse(status_code=401, content={"error": "Import Key 无效"})
 
     user_id, import_key_obj = result
-    user = user_db.get_user(user_id)
+    user = await user_db.get_user(user_id)
     if not user:
         return JSONResponse(status_code=404, content={"error": "用户不存在"})
     if user.is_banned:
         return JSONResponse(status_code=403, content={"error": "用户已被封禁"})
 
     from kiro_gateway.metrics import metrics
-    if metrics.is_self_use_enabled() and visibility == "public":
+    if await metrics.is_self_use_enabled() and visibility == "public":
         return JSONResponse(status_code=403, content={"error": "自用模式下禁止公开 Token"})
 
     if visibility not in ("public", "private"):
@@ -3379,7 +3380,7 @@ async def api_import_tokens(
     )
     if status != 200:
         return JSONResponse(status_code=status, content=result)
-    user_db.record_import_key_usage(import_key_obj.id)
+    await user_db.record_import_key_usage(import_key_obj.id)
     return result
 
 
@@ -3396,17 +3397,17 @@ async def user_update_token(
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
     from kiro_gateway.metrics import metrics
-    if metrics.is_self_use_enabled() and visibility == "public":
+    if await metrics.is_self_use_enabled() and visibility == "public":
         return JSONResponse(status_code=403, content={"error": "自用模式下禁止公开 Token"})
 
     from kiro_gateway.database import user_db
 
     # Verify ownership
-    token = user_db.get_token_by_id(token_id)
+    token = await user_db.get_token_by_id(token_id)
     if not token or token.user_id != user.id:
         return JSONResponse(status_code=404, content={"error": "Token 不存在"})
 
-    success = user_db.set_token_visibility(token_id, visibility)
+    success = await user_db.set_token_visibility(token_id, visibility)
     return {"success": success}
 
 
@@ -3422,7 +3423,7 @@ async def user_delete_token(
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
     from kiro_gateway.database import user_db
-    success = user_db.delete_token(token_id, user.id)
+    success = await user_db.delete_token(token_id, user.id)
     return {"success": success}
 
 
@@ -3439,12 +3440,12 @@ async def user_get_token_account_info(
     from kiro_gateway.database import user_db
 
     # 验证 Token 所有权
-    token = user_db.get_token_by_id(token_id)
+    token = await user_db.get_token_by_id(token_id)
     if not token or token.user_id != user.id:
         return JSONResponse(status_code=404, content={"error": "Token 不存在"})
 
     # 获取解密后的完整凭证（包括 IDC 的 client_id/client_secret）
-    credentials = user_db.get_token_credentials(token_id)
+    credentials = await user_db.get_token_credentials(token_id)
     if not credentials or not credentials.get("refresh_token"):
         return JSONResponse(status_code=400, content={"error": "无法获取 Token"})
 
@@ -3467,7 +3468,7 @@ async def user_get_token_account_info(
     try:
         account_info = await get_kiro_account_info(access_token)
         # 更新缓存
-        user_db.update_token_account_info(
+        await user_db.update_token_account_info(
             token_id,
             email=account_info.get("email"),
             status=account_info.get("status"),
@@ -3499,7 +3500,7 @@ async def user_get_keys(
     from kiro_gateway.database import user_db
     search = search.strip()
     offset = (page - 1) * page_size
-    keys = user_db.get_user_api_keys(
+    keys = await user_db.get_user_api_keys(
         user.id,
         limit=page_size,
         offset=offset,
@@ -3508,7 +3509,7 @@ async def user_get_keys(
         sort_field=sort_field,
         sort_order=sort_order
     )
-    total = user_db.get_user_api_keys_count(user.id, search=search, is_active=is_active)
+    total = await user_db.get_user_api_keys_count(user.id, search=search, is_active=is_active)
     return {
         "keys": [
             {
@@ -3541,15 +3542,15 @@ async def user_create_key(
     from kiro_gateway.metrics import metrics
 
     # Check if user has any tokens (for info purposes only, not blocking)
-    tokens = user_db.get_user_tokens(user.id)
+    tokens = await user_db.get_user_tokens(user.id)
     active_tokens = [t for t in tokens if t.status == "active"]
     has_own_tokens = len(active_tokens) > 0
-    if metrics.is_self_use_enabled():
+    if await metrics.is_self_use_enabled():
         active_private = [t for t in active_tokens if t.visibility == "private"]
         if not active_private:
             return JSONResponse(status_code=400, content={"error": "自用模式下请先添加私有 Token"})
 
-    plain_key, api_key = user_db.generate_api_key(user.id, name or None)
+    plain_key, api_key = await user_db.generate_api_key(user.id, name or None)
     return {
         "success": True,
         "key": plain_key,  # Only returned once!
@@ -3572,7 +3573,7 @@ async def user_update_key(
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
     from kiro_gateway.database import user_db
-    success = user_db.set_api_key_active(key_id, user_id=user.id, is_active=is_active)
+    success = await user_db.set_api_key_active(key_id, user_id=user.id, is_active=is_active)
     if not success:
         return JSONResponse(status_code=404, content={"error": "API Key 不存在"})
     return {"success": True}
@@ -3590,7 +3591,7 @@ async def user_delete_key(
         return JSONResponse(status_code=401, content={"error": "未登录"})
 
     from kiro_gateway.database import user_db
-    success = user_db.delete_api_key(key_id, user.id)
+    success = await user_db.delete_api_key(key_id, user.id)
     return {"success": success}
 
 
@@ -3608,10 +3609,10 @@ async def public_tokens_page(request: Request):
 async def get_public_tokens():
     """Get public tokens list (masked)."""
     from kiro_gateway.metrics import metrics
-    if metrics.is_self_use_enabled():
+    if await metrics.is_self_use_enabled():
         return JSONResponse(status_code=403, content={"error": "自用模式下不开放公开 Token 池"})
     from kiro_gateway.database import user_db
-    tokens = user_db.get_public_tokens_with_users()
+    tokens = await user_db.get_public_tokens_with_users()
     return {
         "tokens": [
             {

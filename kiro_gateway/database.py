@@ -886,7 +886,64 @@ class UserDatabase:
         row = await self._backend.fetch_one(
             "SELECT * FROM tokens WHERE id = ?", (token_id,)
         )
-        return self._row_to_token(row) if row else None
+        return self._row_to_token(row) if row else None    
+ 
+    async def token_exists(self, refresh_token: str) -> bool:
+        """Check if a token with the given refresh_token already exists."""
+        token_hash = self._hash_token(refresh_token)
+        row = await self._backend.fetch_one(
+            "SELECT 1 FROM tokens WHERE token_hash = ?", (token_hash,)
+        )
+        return row is not None
+
+    async def donate_token(
+        self,
+        user_id: int,
+        refresh_token: str,
+        visibility: str = "private",
+        anonymous: bool = False,
+        auth_type: str = "social",
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Donate a token to the pool.
+        
+        Returns:
+            Tuple of (success, message)
+        """
+        # Check if token already exists
+        token_hash = self._hash_token(refresh_token)
+        existing = await self._backend.fetch_one(
+            "SELECT 1 FROM tokens WHERE token_hash = ?", (token_hash,)
+        )
+        if existing:
+            return False, "Token 已存在"
+        
+        # Encrypt the token
+        encrypted_token = self._encrypt_token(refresh_token)
+        
+        # Encrypt client credentials if provided
+        client_id_encrypted = self._encrypt_token(client_id) if client_id else None
+        client_secret_encrypted = self._encrypt_token(client_secret) if client_secret else None
+        
+        now = int(time.time() * 1000)
+        
+        try:
+            await self._backend.execute(
+                """INSERT INTO tokens 
+                   (user_id, refresh_token_encrypted, token_hash, visibility, 
+                    is_anonymous, status, auth_type, client_id_encrypted, 
+                    client_secret_encrypted, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, encrypted_token, token_hash, visibility,
+                 1 if anonymous else 0, "active", auth_type,
+                 client_id_encrypted, client_secret_encrypted, now)
+            )
+            return True, "Token 添加成功"
+        except Exception as e:
+            logger.error(f"Failed to donate token: {e}")
+            return False, f"添加失败: {str(e)}"
 
     async def get_decrypted_token(self, token_id: int) -> Optional[str]:
         """Get decrypted refresh token by ID."""
@@ -896,6 +953,33 @@ class UserDatabase:
         if row:
             return self._decrypt_token(row["refresh_token_encrypted"])
         return None
+    async def get_token_credentials(self, token_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get decrypted token credentials including refresh_token, client_id, client_secret.
+
+        Returns:
+            Dict with refresh_token, client_id, client_secret (or None if not found)
+        """
+        row = await self._backend.fetch_one(
+            """SELECT refresh_token_encrypted, client_id_encrypted, client_secret_encrypted, auth_type
+               FROM tokens WHERE id = ?""",
+            (token_id,)
+        )
+        if not row:
+            return None
+
+        result = {
+            "refresh_token": self._decrypt_token(row["refresh_token_encrypted"]),
+            "auth_type": row.get("auth_type") or "social",
+        }
+
+        # Decrypt client credentials if present (for IDC auth type)
+        if row.get("client_id_encrypted"):
+            result["client_id"] = self._decrypt_token(row["client_id_encrypted"])
+        if row.get("client_secret_encrypted"):
+            result["client_secret"] = self._decrypt_token(row["client_secret_encrypted"])
+
+        return result
 
     async def set_token_status(self, token_id: int, status: str) -> bool:
         """Set token status (active/invalid/expired/suspended)."""
@@ -981,6 +1065,32 @@ class UserDatabase:
             await self._backend.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
         return True
 
+    async def admin_delete_token(self, token_id: int) -> bool:
+        """Admin delete a token (no ownership check)."""
+        await self._backend.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
+        return True
+
+    async def update_token_account_info(
+        self,
+        token_id: int,
+        email: Optional[str] = None,
+        status: Optional[str] = None,
+        usage: Optional[float] = None,
+        limit: Optional[float] = None
+    ) -> None:
+        """Update cached account info for a token."""
+        now = int(time.time() * 1000)
+        await self._backend.execute(
+            """UPDATE tokens SET 
+               account_email = COALESCE(?, account_email),
+               account_status = COALESCE(?, account_status),
+               account_usage = COALESCE(?, account_usage),
+               account_limit = COALESCE(?, account_limit),
+               account_checked_at = ?
+               WHERE id = ?""",
+            (email, status, usage, limit, now, token_id)
+        )
+
     async def get_token_count(self, user_id: int) -> Dict[str, int]:
         """Get token counts by status for a user."""
         rows = await self._backend.fetch_all(
@@ -1030,6 +1140,215 @@ class UserDatabase:
         await self._backend.execute(
             "UPDATE api_keys SET request_count = request_count + 1, last_used = ? WHERE id = ?",
             (now, key_id),
+        )
+
+    async def verify_api_key(self, api_key: str) -> Optional[Tuple[int, int]]:
+        """
+        Verify an API key and return (user_id, key_id) if valid.
+        
+        Returns:
+            Tuple of (user_id, key_id) if valid, None otherwise
+        """
+        key_hash = self._hash_token(api_key)
+        row = await self._backend.fetch_one(
+            "SELECT id, user_id FROM api_keys WHERE key_hash = ? AND is_active = 1",
+            (key_hash,)
+        )
+        if row:
+            return row["user_id"], row["id"]
+        return None
+
+    async def get_api_key_count(self, user_id: int) -> int:
+        """Get count of active API keys for a user."""
+        row = await self._backend.fetch_one(
+            "SELECT COUNT(*) as cnt FROM api_keys WHERE user_id = ? AND is_active = 1",
+            (user_id,)
+        )
+        return row["cnt"] if row else 0
+
+    async def get_user_api_keys(
+        self,
+        user_id: int,
+        limit: Optional[int] = None,
+        offset: int = 0
+    ) -> List[APIKey]:
+        """Get API keys for a user."""
+        query = "SELECT * FROM api_keys WHERE user_id = ? ORDER BY created_at DESC"
+        params: list = [user_id]
+        if limit:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        rows = await self._backend.fetch_all(query, tuple(params))
+        return [self._row_to_apikey(r) for r in rows]
+
+    async def get_all_tokens_with_users(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        search: str = "",
+        visibility: Optional[str] = None,
+        status: Optional[str] = None,
+        user_id: Optional[int] = None,
+        sort_field: str = "created_at",
+        sort_order: str = "desc"
+    ) -> List[Dict]:
+        """Get tokens with user info for admin panel (pagination + filters)."""
+        where: List[str] = []
+        params: List = []
+        
+        if search:
+            like = f"%{search}%"
+            where.append("(u.username LIKE ? OR CAST(t.user_id AS TEXT) LIKE ? OR CAST(t.id AS TEXT) LIKE ?)")
+            params.extend([like, like, like])
+        if visibility:
+            where.append("t.visibility = ?")
+            params.append(visibility)
+        if status:
+            where.append("t.status = ?")
+            params.append(status)
+        if user_id is not None:
+            where.append("t.user_id = ?")
+            params.append(user_id)
+
+        allowed_sort = {
+            "id": "t.id",
+            "username": "u.username",
+            "created_at": "t.created_at",
+            "last_used": "t.last_used",
+            "success_rate": (
+                "CASE WHEN (t.success_count + t.fail_count) > 0 "
+                "THEN CAST(t.success_count AS REAL) / (t.success_count + t.fail_count) "
+                "ELSE 1.0 END"
+            ),
+            "use_count": "(t.success_count + t.fail_count)",
+        }
+        sort_column = allowed_sort.get(sort_field, "t.created_at")
+        order = "ASC" if sort_order.lower() == "asc" else "DESC"
+
+        query = (
+            "SELECT t.*, u.username "
+            "FROM tokens t "
+            "LEFT JOIN users u ON t.user_id = u.id"
+        )
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += f" ORDER BY {sort_column} {order} LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = await self._backend.fetch_all(query, tuple(params))
+        return [
+            {
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "username": r.get("username"),
+                "visibility": r["visibility"],
+                "status": r["status"],
+                "success_count": r["success_count"],
+                "fail_count": r["fail_count"],
+                "success_rate": r["success_count"] / max(r["success_count"] + r["fail_count"], 1),
+                "last_used": r.get("last_used"),
+                "created_at": r["created_at"]
+            }
+            for r in rows
+        ]
+
+    async def get_tokens_count(
+        self,
+        search: str = "",
+        visibility: Optional[str] = None,
+        status: Optional[str] = None,
+        user_id: Optional[int] = None
+    ) -> int:
+        """Get token count with optional filters."""
+        where: List[str] = []
+        params: List = []
+        
+        if search:
+            like = f"%{search}%"
+            where.append("(u.username LIKE ? OR CAST(t.user_id AS TEXT) LIKE ? OR CAST(t.id AS TEXT) LIKE ?)")
+            params.extend([like, like, like])
+        if visibility:
+            where.append("t.visibility = ?")
+            params.append(visibility)
+        if status:
+            where.append("t.status = ?")
+            params.append(status)
+        if user_id is not None:
+            where.append("t.user_id = ?")
+            params.append(user_id)
+
+        query = (
+            "SELECT COUNT(*) as cnt "
+            "FROM tokens t "
+            "LEFT JOIN users u ON t.user_id = u.id"
+        )
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        
+        row = await self._backend.fetch_one(query, tuple(params))
+        return row["cnt"] if row else 0
+
+    async def get_tokens_success_rate_avg(self) -> float:
+        """Get average success rate across all tokens."""
+        query = (
+            "SELECT AVG(CASE WHEN (success_count + fail_count) > 0 "
+            "THEN CAST(success_count AS REAL) / (success_count + fail_count) "
+            "ELSE 1.0 END) as avg_rate FROM tokens"
+        )
+        row = await self._backend.fetch_one(query, ())
+        return row["avg_rate"] if row and row["avg_rate"] is not None else 1.0
+
+    # ==================== Import Key Methods ====================
+
+    async def generate_import_key(self, user_id: int, name: Optional[str] = None) -> Tuple[str, ImportKey]:
+        """Generate a new import key for a user."""
+        plain_key = secrets.token_urlsafe(32)
+        key_hash = self._hash_token(plain_key)
+        key_prefix = plain_key[:8]
+        now = int(time.time() * 1000)
+        
+        key_id = await self._backend.execute(
+            """INSERT INTO import_keys (user_id, key_hash, key_prefix, name, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, key_hash, key_prefix, name, now)
+        )
+        
+        import_key = ImportKey(
+            id=key_id,
+            user_id=user_id,
+            key_prefix=key_prefix,
+            name=name,
+            is_active=True,
+            request_count=0,
+            last_used=None,
+            created_at=now
+        )
+        return plain_key, import_key
+
+    async def delete_import_key(self, key_id: int) -> bool:
+        """Delete an import key."""
+        await self._backend.execute("DELETE FROM import_keys WHERE id = ?", (key_id,))
+        return True
+
+    async def verify_import_key(self, import_key: str) -> Optional[Tuple[int, ImportKey]]:
+        """
+        Verify an import key and return (user_id, ImportKey) if valid.
+        """
+        key_hash = self._hash_token(import_key)
+        row = await self._backend.fetch_one(
+            "SELECT * FROM import_keys WHERE key_hash = ? AND is_active = 1",
+            (key_hash,)
+        )
+        if row:
+            return row["user_id"], self._row_to_import_key(row)
+        return None
+
+    async def record_import_key_usage(self, key_id: int) -> None:
+        """Record import key usage."""
+        now = int(time.time() * 1000)
+        await self._backend.execute(
+            "UPDATE import_keys SET request_count = request_count + 1, last_used = ? WHERE id = ?",
+            (now, key_id)
         )
 
 
