@@ -1,0 +1,16 @@
+[run]
+source = geek_gateway
+omit = 
+    tests/*
+    */__pycache__/*
+    venv/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if TYPE_CHECKING:
+
+[html]
+directory = htmlcov

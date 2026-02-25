@@ -18,13 +18,13 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 """
-KiroGate - OpenAI & Anthropic 兼容的 Kiro API 网关。
+KiroGate - OpenAI & Anthropic 兼容�?Kiro API 网关�?
 
-应用程序入口点。创建 FastAPI 应用并连接路由。
+应用程序入口点。创�?FastAPI 应用并连接路由�?
 
 用法:
     uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
-    或直接运行:
+    或直接运�?
     python main.py
 """
 
@@ -41,21 +41,21 @@ from loguru import logger
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from kiro_gateway.config import (
+from geek_gateway.config import (
     APP_TITLE,
     APP_DESCRIPTION,
     APP_VERSION,
     settings,
 )
-from kiro_gateway.auth import KiroAuthManager
-from kiro_gateway.cache import ModelInfoCache
-from kiro_gateway.routes import router, limiter, rate_limit_handler
-from kiro_gateway.exceptions import validation_exception_handler
-from kiro_gateway.middleware import RequestTrackingMiddleware, MetricsMiddleware, SiteGuardMiddleware
-from kiro_gateway.http_client import close_global_http_client
+from geek_gateway.auth import KiroAuthManager
+from geek_gateway.cache import ModelInfoCache
+from geek_gateway.routes import router, limiter, rate_limit_handler
+from geek_gateway.exceptions import validation_exception_handler
+from geek_gateway.middleware import RequestTrackingMiddleware, MetricsMiddleware, SiteGuardMiddleware
+from geek_gateway.http_client import close_global_http_client
 
 
-# --- Windows 控制台 UTF-8 编码修复 ---
+# --- Windows 控制�?UTF-8 编码修复 ---
 if sys.platform == "win32":
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     try:
@@ -77,19 +77,19 @@ logger.add(
 
 class InterceptHandler(logging.Handler):
     """
-    拦截标准 logging 并重定向到 loguru。
+    拦截标准 logging 并重定向�?loguru�?
 
-    这允许捕获来自 uvicorn、FastAPI 和其他使用标准 logging 而非 loguru 的库的日志。
+    这允许捕获来�?uvicorn、FastAPI 和其他使用标�?logging 而非 loguru 的库的日志�?
     """
 
     def emit(self, record: logging.LogRecord) -> None:
-        # 获取对应的 loguru 级别
+        # 获取对应�?loguru 级别
         try:
             level = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
 
-        # 查找调用帧以正确显示源
+        # 查找调用帧以正确显示�?
         frame, depth = logging.currentframe(), 2
         while frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back
@@ -100,7 +100,7 @@ class InterceptHandler(logging.Handler):
 
 def setup_logging_intercept():
     """
-    配置从标准 logging 到 loguru 的拦截。
+    配置从标�?logging �?loguru 的拦截�?
 
     拦截来自的日志：
     - uvicorn (access logs, error logs)
@@ -108,7 +108,7 @@ def setup_logging_intercept():
     - uvicorn.access
     - fastapi
     """
-    # 要拦截的日志器列表
+    # 要拦截的日志器列�?
     loggers_to_intercept = [
         "uvicorn",
         "uvicorn.error",
@@ -128,23 +128,23 @@ setup_logging_intercept()
 
 # --- 启动 Banner ---
 def _print_startup_banner():
-    """打印启动成功后的 ASCII art logo 和项目信息。"""
+    """打印启动成功后的 ASCII art logo 和项目信息�?""
     banner = """
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║     _  ___           ____       _                             ║
-║    | |/ (_)_ __ ___/ ___| __ _| |_ ___                       ║
-║    | ' /| | '__/ _ \\ |  _ / _` | __/ _ \\                      ║
-║    | . \\| | | | (_) | |_| | (_| | ||  __/                     ║
-║    |_|\\_\\_|_|  \\___/ \\____|\\__,_|\\__\\___|                     ║
-║                                                               ║
-║                  OpenAI & Anthropic Gateway                   ║
-║                       Version 2.1.0                           ║
-║                                                               ║
-╚═══════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════�?
+�?                                                              �?
+�?    _  ___           ____       _                             �?
+�?   | |/ (_)_ __ ___/ ___| __ _| |_ ___                       �?
+�?   | ' /| | '__/ _ \\ |  _ / _` | __/ _ \\                      �?
+�?   | . \\| | | | (_) | |_| | (_| | ||  __/                     �?
+�?   |_|\\_\\_|_|  \\___/ \\____|\\__,_|\\__\\___|                     �?
+�?                                                              �?
+�?                 OpenAI & Anthropic Gateway                   �?
+�?                      Version 2.1.0                           �?
+�?                                                              �?
+╚═══════════════════════════════════════════════════════════════�?
 """
 
-    # 使用普通 print，因为这是美化输出，不需要记录到日志文件
+    # 使用普�?print，因为这是美化输出，不需要记录到日志文件
     print(banner)
 
     # 输出项目地址信息
@@ -152,25 +152,25 @@ def _print_startup_banner():
     logger.info("🚀 KiroGate 启动成功!")
     logger.info("=" * 60)
     logger.info("📍 项目地址:")
-    logger.info(f"   • 本地访问: http://127.0.0.1:8000")
-    logger.info(f"   • 网络访问: http://0.0.0.0:8000")
+    logger.info(f"   �?本地访问: http://127.0.0.1:8000")
+    logger.info(f"   �?网络访问: http://0.0.0.0:8000")
     logger.info("📖 API 文档:")
-    logger.info(f"   • Swagger UI: http://127.0.0.1:8000/docs")
-    logger.info(f"   • Admin 面板: http://127.0.0.1:8000/admin")
+    logger.info(f"   �?Swagger UI: http://127.0.0.1:8000/docs")
+    logger.info(f"   �?Admin 面板: http://127.0.0.1:8000/admin")
     logger.info("=" * 60)
 
 
 # --- 配置验证 ---
 def validate_configuration() -> None:
     """
-    验证所需配置是否存在。
+    验证所需配置是否存在�?
 
-    支持两种认证模式：
-    1. 简单模式：需要配置 REFRESH_TOKEN 或 KIRO_CREDS_FILE
-    2. 组合模式：只需配置 PROXY_API_KEY，REFRESH_TOKEN 由用户在请求中传递
+    支持两种认证模式�?
+    1. 简单模式：需要配�?REFRESH_TOKEN �?KIRO_CREDS_FILE
+    2. 组合模式：只需配置 PROXY_API_KEY，REFRESH_TOKEN 由用户在请求中传�?
 
     Raises:
-        SystemExit: 如果缺少关键配置（PROXY_API_KEY）
+        SystemExit: 如果缺少关键配置（PROXY_API_KEY�?
     """
     errors = []
 
@@ -183,7 +183,7 @@ def validate_configuration() -> None:
             "This is the password used to authenticate API requests."
         )
 
-    # 检查凭证配置
+    # 检查凭证配�?
     has_refresh_token = bool(settings.refresh_token)
     has_creds_file = bool(settings.kiro_creds_file)
 
@@ -223,7 +223,7 @@ def validate_configuration() -> None:
             logger.info(f"Using refresh token (via {config_source})")
         logger.info("Auth mode: Simple mode (server-configured REFRESH_TOKEN) + Multi-tenant mode supported")
     else:
-        # 仅组合模式：用户在请求中传递 REFRESH_TOKEN
+        # 仅组合模式：用户在请求中传�?REFRESH_TOKEN
         logger.info("No REFRESH_TOKEN configured - running in multi-tenant only mode")
         logger.info("Auth mode: Multi-tenant only (users must provide PROXY_API_KEY:REFRESH_TOKEN)")
         logger.info("Tip: Configure REFRESH_TOKEN to enable simple mode authentication")
@@ -233,30 +233,30 @@ def validate_configuration() -> None:
 validate_configuration()
 
 
-# --- 生命周期管理器 ---
+# --- 生命周期管理�?---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    管理应用程序生命周期。
+    管理应用程序生命周期�?
 
-    启动顺序：
+    启动顺序�?
     1. 数据库连接池
-    2. Redis 连接池
+    2. Redis 连接�?
     3. 指标系统
     4. 认证缓存
-    5. Token 分配器
+    5. Token 分配�?
     6. 健康检查器
-    7. 配置热重载订阅
+    7. 配置热重载订�?
     8. 节点心跳上报
 
-    关闭顺序（反序）：
+    关闭顺序（反序）�?
     1. 节点心跳
     2. 配置订阅
-    3. 健康检查器（释放领导者锁）
-    4. Token 分配器
+    3. 健康检查器（释放领导者锁�?
+    4. Token 分配�?
     5. 认证缓存
-    6. 指标系统（刷新待写入数据）
-    7. Redis 连接池
+    6. 指标系统（刷新待写入数据�?
+    7. Redis 连接�?
     8. 数据库连接池
     """
     logger.info("Starting application... Initializing components.")
@@ -270,51 +270,51 @@ async def lifespan(app: FastAPI):
 
     # ==================== 启动顺序 ====================
 
-    # 设置应用状态标志
+    # 设置应用状态标�?
     app.state.is_shutting_down = False
 
-    # 1. 数据库连接池初始化
-    from kiro_gateway.database import user_db
+    # 1. 数据库连接池初始�?
+    from geek_gateway.database import user_db
     await user_db.initialize()
-    logger.info("✓ 数据库连接池已初始化")
+    logger.info("�?数据库连接池已初始化")
 
     # 2. Redis 连接池初始化
     if settings.is_distributed:
-        from kiro_gateway.redis_manager import redis_manager
+        from geek_gateway.redis_manager import redis_manager
         await redis_manager.initialize(settings.redis_url, settings.redis_max_connections)
-        logger.info("✓ Redis 连接池已初始化")
+        logger.info("�?Redis 连接池已初始�?)
 
-    # 3. 指标系统初始化
-    from kiro_gateway.metrics import metrics
+    # 3. 指标系统初始�?
+    from geek_gateway.metrics import metrics
     await metrics.initialize()
-    logger.info("✓ 指标系统已初始化")
+    logger.info("�?指标系统已初始化")
 
     # 4. 认证缓存初始化（无需显式初始化，使用时自动创建）
-    logger.info("✓ 认证缓存已就绪")
+    logger.info("�?认证缓存已就�?)
 
     # 5. Token 分配器初始化
-    from kiro_gateway.token_allocator import token_allocator
+    from geek_gateway.token_allocator import token_allocator
     await token_allocator.initialize()
-    logger.info("✓ Token 分配器已初始化")
+    logger.info("�?Token 分配器已初始�?)
 
     # 6. 健康检查器启动
-    from kiro_gateway.health_checker import health_checker
+    from geek_gateway.health_checker import health_checker
     await health_checker.start()
-    logger.info("✓ 健康检查器已启动")
+    logger.info("�?健康检查器已启�?)
 
     # 7. 配置热重载订阅（分布式模式）
     if settings.is_distributed:
-        from kiro_gateway.config_reloader import config_reloader
+        from geek_gateway.config_reloader import config_reloader
         await config_reloader.start()
-        logger.info("✓ 配置热重载订阅已启动")
+        logger.info("�?配置热重载订阅已启动")
 
-    # 8. 节点心跳上报（分布式模式）
+    # 8. 节点心跳上报（分布式模式�?
     if settings.is_distributed:
-        from kiro_gateway.heartbeat import node_heartbeat
+        from geek_gateway.heartbeat import node_heartbeat
         await node_heartbeat.start()
-        logger.info("✓ 节点心跳上报已启动")
+        logger.info("�?节点心跳上报已启�?)
 
-    # ==================== 旧版兼容：模型缓存 ====================
+    # ==================== 旧版兼容：模型缓�?====================
 
     # 创建全局 AuthManager（简单模式使用）
     auth_manager = KiroAuthManager(
@@ -345,7 +345,7 @@ async def lifespan(app: FastAPI):
 
     # ==================== 启动日志 ====================
 
-    deployment_mode = "分布式模式" if settings.is_distributed else "单节点模式"
+    deployment_mode = "分布式模�? if settings.is_distributed else "单节点模�?
     logger.info("=" * 60)
     logger.info(f"部署模式: {deployment_mode}")
     if settings.is_distributed:
@@ -367,57 +367,57 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down application...")
 
-    # 设置关闭标志，/health 端点将返回 503
+    # 设置关闭标志�?health 端点将返�?503
     app.state.is_shutting_down = True
 
     # 1. 节点心跳停止
     if settings.is_distributed:
-        from kiro_gateway.heartbeat import node_heartbeat
+        from geek_gateway.heartbeat import node_heartbeat
         await node_heartbeat.stop()
-        logger.info("✓ 节点心跳已停止")
+        logger.info("�?节点心跳已停�?)
 
     # 2. 配置订阅停止
     if settings.is_distributed:
-        from kiro_gateway.config_reloader import config_reloader
+        from geek_gateway.config_reloader import config_reloader
         await config_reloader.stop()
-        logger.info("✓ 配置热重载订阅已停止")
+        logger.info("�?配置热重载订阅已停止")
 
-    # 3. 健康检查器停止（释放领导者锁）
-    from kiro_gateway.health_checker import health_checker
+    # 3. 健康检查器停止（释放领导者锁�?
+    from geek_gateway.health_checker import health_checker
     await health_checker.stop()
-    logger.info("✓ 健康检查器已停止")
+    logger.info("�?健康检查器已停�?)
 
-    # 4. Token 分配器关闭
-    from kiro_gateway.token_allocator import token_allocator
+    # 4. Token 分配器关�?
+    from geek_gateway.token_allocator import token_allocator
     await token_allocator.shutdown()
-    logger.info("✓ Token 分配器已关闭")
+    logger.info("�?Token 分配器已关闭")
 
-    # 5. 认证缓存关闭（无需显式关闭）
-    logger.info("✓ 认证缓存已清理")
+    # 5. 认证缓存关闭（无需显式关闭�?
+    logger.info("�?认证缓存已清�?)
 
-    # 6. 指标系统刷新待写入数据
-    from kiro_gateway.metrics import metrics
+    # 6. 指标系统刷新待写入数�?
+    from geek_gateway.metrics import metrics
     await metrics.flush()
-    logger.info("✓ 指标系统已刷新")
+    logger.info("�?指标系统已刷�?)
 
-    # 7. Redis 连接池关闭
+    # 7. Redis 连接池关�?
     if settings.is_distributed:
-        from kiro_gateway.redis_manager import redis_manager
+        from geek_gateway.redis_manager import redis_manager
         await redis_manager.close()
-        logger.info("✓ Redis 连接池已关闭")
+        logger.info("�?Redis 连接池已关闭")
 
     # 8. 数据库连接池关闭
-    from kiro_gateway.database import user_db
+    from geek_gateway.database import user_db
     await user_db.close()
-    logger.info("✓ 数据库连接池已关闭")
+    logger.info("�?数据库连接池已关�?)
 
-    # ==================== 旧版兼容：模型缓存 ====================
+    # ==================== 旧版兼容：模型缓�?====================
 
     # 停止后台任务
     if has_global_credentials:
         await model_cache.stop_background_refresh()
 
-    # 关闭全局 HTTP 客户端
+    # 关闭全局 HTTP 客户�?
     await close_global_http_client()
 
     logger.info("Application shutdown complete.")
@@ -429,8 +429,8 @@ app = FastAPI(
     description=APP_DESCRIPTION,
     version=APP_VERSION,
     lifespan=lifespan,
-    docs_url=None,  # 禁用默认的 /docs，使用自定义页面
-    redoc_url=None  # 禁用默认的 /redoc
+    docs_url=None,  # 禁用默认�?/docs，使用自定义页面
+    redoc_url=None  # 禁用默认�?/redoc
 )
 
 # 添加中间件（顺序很重要：最后添加的最先执行）
@@ -438,20 +438,20 @@ app.add_middleware(RequestTrackingMiddleware)
 app.add_middleware(MetricsMiddleware)
 app.add_middleware(SiteGuardMiddleware)
 
-# 设置速率限制器
+# 设置速率限制�?
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 
-# 注册验证错误处理器
+# 注册验证错误处理�?
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 
-# 404 页面处理器
+# 404 页面处理�?
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
     """Handle 404 errors with a custom page."""
     from fastapi.responses import HTMLResponse
-    from kiro_gateway.pages import render_404_page
+    from geek_gateway.pages import render_404_page
     return HTMLResponse(content=render_404_page(), status_code=404)
 
 
@@ -460,8 +460,8 @@ app.include_router(router)
 
 
 # --- Uvicorn 日志配置 ---
-# 最小配置，将 uvicorn 日志重定向到 loguru。
-# 使用 InterceptHandler 拦截日志并传递给 loguru。
+# 最小配置，�?uvicorn 日志重定向到 loguru�?
+# 使用 InterceptHandler 拦截日志并传递给 loguru�?
 UVICORN_LOG_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -478,7 +478,7 @@ UVICORN_LOG_CONFIG = {
 }
 
 
-# --- 入口点 ---
+# --- 入口�?---
 if __name__ == "__main__":
     import uvicorn
     logger.info("Starting Uvicorn server...")
@@ -488,5 +488,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         log_config=UVICORN_LOG_CONFIG,
-        timeout_graceful_shutdown=30,  # 优雅关闭超时 30 秒
+        timeout_graceful_shutdown=30,  # 优雅关闭超时 30 �?
     )
